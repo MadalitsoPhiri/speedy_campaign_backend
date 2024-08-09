@@ -122,7 +122,9 @@ def handle_checkout_session(session):
     is_anonymous = session['metadata'].get('is_anonymous', False)
     
     if is_anonymous:
-        email = session.get('customer_email')
+        email = session.get('customer_details', {}).get('email')
+        name = session.get('customer_details', {}).get('name')
+        
         if not email:
             current_app.logger.error("No email found for anonymous checkout.")
             return
@@ -132,23 +134,29 @@ def handle_checkout_session(session):
         
         if not user:
             # Create a new user account
-            user = User(email=email, username=email.split('@')[0], password='', is_active=True)
+            user = User(email=email, username=name, password='', is_active=True)
             db.session.add(user)
             db.session.commit()
             current_app.logger.info(f"Created new user for anonymous checkout with email: {email}")
+            
+            # Create a new ad account for the user
+            ad_account = AdAccount(user_id=user.id, subscription_plan=plan_type, is_subscription_active=True)
+            ad_account.subscription_start_date = datetime.utcnow()
+            ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+            ad_account.stripe_subscription_id = session['subscription']
+            db.session.add(ad_account)
+            db.session.commit()
+            current_app.logger.info(f"Created new ad account for user {user.id}")
+        else:
+            # Log in the existing user and handle as a normal checkout
+            login_user(user)
+            current_app.logger.info(f"User {user.id} already exists, proceeding with normal checkout flow")
+            
+            # Handle the process as a normal checkout
+            handle_normal_checkout(user, session, plan_type)
         
-        login_user(user)  # Log in the newly created user
-
-        # Create a new ad account for the user
-        ad_account = AdAccount(user_id=user.id, subscription_plan=plan_type, is_subscription_active=True)
-        ad_account.subscription_start_date = datetime.utcnow()
-        ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
-        ad_account.stripe_subscription_id = session['subscription']
-        db.session.add(ad_account)
-        db.session.commit()
-        current_app.logger.info(f"Created new ad account for user {user.id}")
-
     else:
+        # Normal checkout handling for logged-in users
         user_id = session['metadata']['user_id']
         ad_account_id = session['metadata']['ad_account_id']
         
@@ -156,51 +164,55 @@ def handle_checkout_session(session):
         ad_account = AdAccount.query.get(ad_account_id)
         
         if user and ad_account:
-            # Check if user is downgrading from Enterprise to Professional
-            if user.subscription_plan == 'Enterprise' and plan_type == 'Professional':
-                # Delete all ad accounts
-                AdAccount.query.filter_by(user_id=user.id).delete()
-                current_app.logger.info(f"Deleted all ad accounts for user {user.id} as they are downgrading to Professional plan")
+            handle_normal_checkout(user, session, plan_type)
 
-                # Create a new ad account for the Professional plan
-                ad_account = AdAccount(user_id=user.id, subscription_plan=plan_type, is_subscription_active=True)
-                ad_account.subscription_start_date = datetime.utcnow()
-                ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
-                ad_account.stripe_subscription_id = session['subscription']
-                db.session.add(ad_account)
+def handle_normal_checkout(user, session, plan_type):
+    ad_account_id = session['metadata']['ad_account_id']
+    ad_account = AdAccount.query.get(ad_account_id)
 
-            else:
-                # Normal subscription handling
-                if ad_account.stripe_subscription_id and ad_account.is_subscription_active:
-                    try:
-                        stripe.Subscription.delete(ad_account.stripe_subscription_id)
-                        current_app.logger.info(f"Cancelled existing subscription for ad account {ad_account.id}")
-                    except stripe.error.InvalidRequestError as e:
-                        current_app.logger.error(f"Stripe API error while canceling subscription: {e}")
-                        if "No such subscription" in str(e):
-                            current_app.logger.warning(f"Subscription {ad_account.stripe_subscription_id} not found.")
-                            ad_account.stripe_subscription_id = None
-                        else:
-                            raise e
+    if user.subscription_plan == 'Enterprise' and plan_type == 'Professional':
+        # Delete all ad accounts for downgrade to Professional
+        AdAccount.query.filter_by(user_id=user.id).delete()
+        current_app.logger.info(f"Deleted all ad accounts for user {user.id} as they are downgrading to Professional plan")
 
-                ad_account.stripe_subscription_id = session['subscription']
-                ad_account.is_subscription_active = True
-                ad_account.subscription_plan = plan_type
-                ad_account.subscription_start_date = datetime.utcnow()
-                ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+        # Create a new ad account for the Professional plan
+        ad_account = AdAccount(user_id=user.id, subscription_plan=plan_type, is_subscription_active=True)
+        ad_account.subscription_start_date = datetime.utcnow()
+        ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+        ad_account.stripe_subscription_id = session['subscription']
+        db.session.add(ad_account)
+    else:
+        # Normal subscription handling
+        if ad_account.stripe_subscription_id and ad_account.is_subscription_active:
+            try:
+                stripe.Subscription.delete(ad_account.stripe_subscription_id)
+                current_app.logger.info(f"Cancelled existing subscription for ad account {ad_account.id}")
+            except stripe.error.InvalidRequestError as e:
+                current_app.logger.error(f"Stripe API error while canceling subscription: {e}")
+                if "No such subscription" in str(e):
+                    current_app.logger.warning(f"Subscription {ad_account.stripe_subscription_id} not found.")
+                    ad_account.stripe_subscription_id = None
+                else:
+                    raise e
 
-                if plan_type == 'Free Trial':
-                    ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=5)
-                    start_free_trial(user)
+        ad_account.stripe_subscription_id = session['subscription']
+        ad_account.is_subscription_active = True
+        ad_account.subscription_plan = plan_type
+        ad_account.subscription_start_date = datetime.utcnow()
+        ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
 
-            # Update user subscription details
-            user.subscription_plan = plan_type
-            user.is_subscription_active = True
-            user.subscription_start_date = datetime.utcnow()
-            user.subscription_end_date = datetime.utcnow() + timedelta(days=30)
-            db.session.commit()
+        if plan_type == 'Free Trial':
+            ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=5)
+            start_free_trial(user)
 
-            current_app.logger.info(f"Subscription plan updated for user {user.id} and ad account {ad_account.id}")
+    # Update user subscription details
+    user.subscription_plan = plan_type
+    user.is_subscription_active = True
+    user.subscription_start_date = datetime.utcnow()
+    user.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+    db.session.commit()
+
+    current_app.logger.info(f"Subscription plan updated for user {user.id} and ad account {ad_account.id}")
 
 @payment.route('/stripe-webhook', methods=['POST'])
 @cross_origin(supports_credentials=True)

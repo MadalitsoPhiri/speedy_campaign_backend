@@ -99,9 +99,12 @@ def current_user_route():
         return jsonify({}), 200
 
     if current_user.is_authenticated:
+        current_app.logger.info(f"User {current_user.username} is authenticated.")
         return jsonify({'user': {'username': current_user.username, 'email': current_user.email}}), 200
-    return jsonify({'user': None}), 401
-
+    else:
+        current_app.logger.warning("User not authenticated. Returning 401.")
+        return jsonify({'user': None}), 401
+    
 @auth.route('/google', methods=['POST', 'OPTIONS'])
 @cross_origin(supports_credentials=True)
 def google_login():
