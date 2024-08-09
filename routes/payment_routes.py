@@ -91,7 +91,8 @@ def create_checkout_session():
                 metadata={
                     'user_id': current_user.id, 
                     'ad_account_id': ad_account.id,
-                    'plan_type': plan_type
+                    'plan_type': plan_type,
+                    'is_anonymous': False
                 }
             )
         else:
@@ -109,7 +110,8 @@ def create_checkout_session():
                 metadata={
                     'user_id': current_user.id, 
                     'ad_account_id': ad_account.id,
-                    'plan_type': plan_type
+                    'plan_type': plan_type,
+                    'is_anonymous': False
                 }
             )
 
@@ -161,6 +163,13 @@ def handle_checkout_session(session):
             db.session.commit()
             current_app.logger.info(f"Created new ad account for user {user.id}")
 
+            if plan_type == 'Free Trial':
+                ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=5)
+                start_free_trial(user)
+        else:
+            # Normal checkout handling for logged-in users
+            handle_normal_checkout(user, session, plan_type)
+
     else:
         # Normal checkout handling for logged-in users
         user_id = session['metadata']['user_id']
@@ -171,6 +180,20 @@ def handle_checkout_session(session):
 
         if user and ad_account:
             handle_normal_checkout(user, session, plan_type)
+
+def log_user_and_ad_accounts(user):
+    # Log user information
+    current_app.logger.info(f"User ID: {user.id}, Email: {user.email}, Username: {user.username}, Subscription Plan: {user.subscription_plan}")
+
+    # Fetch and log all ad accounts for this user
+    ad_accounts = AdAccount.query.filter_by(user_id=user.id).all()
+    for ad_account in ad_accounts:
+        current_app.logger.info(
+            f"Ad Account ID: {ad_account.id}, Subscription Plan: {ad_account.subscription_plan}, "
+            f"Is Active: {ad_account.is_subscription_active}, "
+            f"Start Date: {ad_account.subscription_start_date}, End Date: {ad_account.subscription_end_date}, "
+            f"Stripe Subscription ID: {ad_account.stripe_subscription_id}"
+        )
 
 def handle_normal_checkout(user, session, plan_type):
     ad_account_id = session['metadata']['ad_account_id']
