@@ -19,7 +19,7 @@ if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
 # Enable CORS with credentials
-cors = CORS(app, supports_credentials=True, resources={r"/*": {"origins": "http://localhost:3000/"}})
+cors = CORS(app, supports_credentials=True, resources={r"/*": {"origins": "http://localhost:3000"}})
 
 # Initialize Flask extensions
 db.init_app(app)

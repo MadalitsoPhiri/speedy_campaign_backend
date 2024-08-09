@@ -9,6 +9,10 @@ from dotenv import load_dotenv
 import os
 from flask_login import login_user
 import logging
+import requests
+import secrets
+import string
+from werkzeug.security import generate_password_hash
 
 # Initialize the Blueprint for payment routes
 payment = Blueprint('payment', __name__)
@@ -116,29 +120,38 @@ def create_checkout_session():
     except Exception as e:
         current_app.logger.error(f"Stripe API error: {str(e)}")
         return jsonify({'error': str(e)}), 500
+    
+def generate_random_password(length=12):
+    characters = string.ascii_letters + string.digits + string.punctuation
+    return ''.join(secrets.choice(characters) for i in range(length))
 
 def handle_checkout_session(session):
     plan_type = session['metadata']['plan_type']
-    is_anonymous = session['metadata'].get('is_anonymous', False)
-    
+    is_anonymous = session['metadata']['is_anonymous']
+
     if is_anonymous:
         email = session.get('customer_details', {}).get('email')
         name = session.get('customer_details', {}).get('name')
-        
+
         if not email:
             current_app.logger.error("No email found for anonymous checkout.")
             return
-        
+
         # Check if the user already exists
         user = User.query.filter_by(email=email).first()
-        
+
         if not user:
-            # Create a new user account
-            user = User(email=email, username=name, password='', is_active=True)
+            # Generate a random password
+            random_password = generate_random_password()
+            hashed_password = generate_password_hash(random_password, method='pbkdf2:sha256')
+
+            # Create a new user account with hashed password
+            user = User(email=email, username=name, password=hashed_password, is_active=True)
+            user.subscription_plan = plan_type
             db.session.add(user)
             db.session.commit()
             current_app.logger.info(f"Created new user for anonymous checkout with email: {email}")
-            
+
             # Create a new ad account for the user
             ad_account = AdAccount(user_id=user.id, subscription_plan=plan_type, is_subscription_active=True)
             ad_account.subscription_start_date = datetime.utcnow()
@@ -147,22 +160,15 @@ def handle_checkout_session(session):
             db.session.add(ad_account)
             db.session.commit()
             current_app.logger.info(f"Created new ad account for user {user.id}")
-        else:
-            # Log in the existing user and handle as a normal checkout
-            login_user(user)
-            current_app.logger.info(f"User {user.id} already exists, proceeding with normal checkout flow")
-            
-            # Handle the process as a normal checkout
-            handle_normal_checkout(user, session, plan_type)
-        
+
     else:
         # Normal checkout handling for logged-in users
         user_id = session['metadata']['user_id']
         ad_account_id = session['metadata']['ad_account_id']
-        
+
         user = User.query.get(user_id)
         ad_account = AdAccount.query.get(ad_account_id)
-        
+
         if user and ad_account:
             handle_normal_checkout(user, session, plan_type)
 
@@ -513,7 +519,7 @@ def create_anonymous_checkout_session():
                     'quantity': 1,
                 }],
                 mode='subscription',
-                success_url="http://localhost:3000/pricing-section",
+                success_url=f"http://localhost:5000/auth/auto-login?session_id={{CHECKOUT_SESSION_ID}}",
                 cancel_url="http://localhost:3000/pricing-section",
                 metadata={
                     'plan_type': plan_type,
@@ -530,7 +536,7 @@ def create_anonymous_checkout_session():
                 }],
                 mode='subscription',
                 subscription_data={'trial_period_days': 5},
-                success_url="http://localhost:3000/pricing-section",
+                success_url=f"http://localhost:5000/auth/auto-login?session_id={{CHECKOUT_SESSION_ID}}",
                 cancel_url="http://localhost:3000/pricing-section",
                 metadata={
                     'plan_type': plan_type,
@@ -542,3 +548,4 @@ def create_anonymous_checkout_session():
     except Exception as e:
         current_app.logger.error(f"Stripe API error: {str(e)}")
         return jsonify({'error': str(e)}), 500
+

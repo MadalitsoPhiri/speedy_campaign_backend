@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 import os
 import requests
 from datetime import datetime, timedelta
+import stripe
 
 auth = Blueprint('auth', __name__)
 
@@ -20,6 +21,9 @@ load_dotenv()
 UPLOAD_FOLDER = 'static/uploads'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
+
+# Initialize Stripe with your secret key
+stripe.api_key = os.getenv('STRIPE_API_KEY')
 
 # Yagmail setup
 YAGMAIL_USER = os.getenv('YAGMAIL_USER')
@@ -80,6 +84,7 @@ def login():
 
     remember = data.get('remember', False)
     login_user(user, remember=remember)
+    print(f"User {user.username} logged in. Is authenticated? {current_user.is_authenticated()}")
     return jsonify({'message': 'Logged in successfully', 'user': {'username': user.username, 'email': user.email}}), 200
 
 @auth.route('/logout', methods=['POST', 'OPTIONS'])
@@ -439,4 +444,24 @@ def verify_email(token):
         return jsonify({'message': 'The verification link has expired.'}), 400
     except BadSignature:
         return jsonify({'message': 'Invalid verification link.'}), 400
+
+@auth.route('/auto-login', methods=['GET'])
+def auto_login():
+    session_id = request.args.get('session_id')
+
+    # Retrieve the Stripe session to get user info
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+        customer_email = session.get('customer_details', {}).get('email')
+
+        # Find the user in your database
+        user = User.query.filter_by(email=customer_email).first()
+        if user:
+            login_user(user)
+            # Redirect to the frontend URL directly
+            return redirect('http://localhost:3000/')
+        else:
+            return jsonify({'error': 'User not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
