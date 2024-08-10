@@ -130,6 +130,7 @@ def generate_random_password(length=12):
 def handle_checkout_session(session):
     plan_type = session['metadata']['plan_type']
     is_anonymous = session['metadata']['is_anonymous']
+    commit_needed = True  # Flag to control whether to commit changes
 
     if is_anonymous:
         email = session.get('customer_details', {}).get('email')
@@ -165,13 +166,17 @@ def handle_checkout_session(session):
 
             if plan_type == 'Free Trial':
                 ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=5)
-                start_free_trial(user)
+                try:
+                    start_free_trial(user)
+                    commit_needed = False  # Skip commit for free trial
+                except ValueError as e:
+                    current_app.logger.warning(f"Cannot start free trial: {e}")
+
         else:
             # Normal checkout handling for logged-in users
             user_id = user.id
             ad_account = AdAccount.query.filter_by(user_id=user.id).first()
 
-            # Normal checkout handling for logged-in users
             if user.subscription_plan == 'Enterprise' and plan_type == 'Professional':
                 # Delete all ad accounts for downgrade to Professional
                 AdAccount.query.filter_by(user_id=user.id).delete()
@@ -183,7 +188,7 @@ def handle_checkout_session(session):
                 ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
                 ad_account.stripe_subscription_id = session['subscription']
                 db.session.add(ad_account)
-            
+
             elif user.subscription_plan == 'Enterprise' and plan_type == 'Enterprise':
                 # Add a new ad account for the existing Enterprise plan
                 ad_account = AdAccount(user_id=user.id, subscription_plan=plan_type, is_subscription_active=True)
@@ -192,6 +197,18 @@ def handle_checkout_session(session):
                 ad_account.stripe_subscription_id = session['subscription']
                 db.session.add(ad_account)
                 current_app.logger.info(f"Added new ad account for user {user.id} under the Enterprise plan.")
+
+            elif plan_type == 'Free Trial':
+                try:
+                    start_free_trial(user)
+                    ad_account.stripe_subscription_id = session['subscription']
+                    ad_account.is_subscription_active = True
+                    ad_account.subscription_plan = plan_type
+                    ad_account.subscription_start_date = datetime.utcnow()
+                    ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+                    commit_needed = False  # Skip commit for free trial
+                except ValueError as e:
+                    current_app.logger.warning(f"Cannot start free trial: {e}")
             else:
                 # Normal subscription handling
                 if ad_account.stripe_subscription_id and ad_account.is_subscription_active:
@@ -212,18 +229,13 @@ def handle_checkout_session(session):
                 ad_account.subscription_start_date = datetime.utcnow()
                 ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
 
-                if plan_type == 'Free Trial':
-                    try:
-                        start_free_trial(user)
-                    except ValueError as e:
-                        current_app.logger.warning(f"Cannot start free trial: {e}")
-
-            # Update user subscription details
-            user.subscription_plan = plan_type
-            user.is_subscription_active = True
-            user.subscription_start_date = datetime.utcnow()
-            user.subscription_end_date = datetime.utcnow() + timedelta(days=30)
-            db.session.commit()
+            # Update user subscription details only if not Free Trial
+            if commit_needed:
+                user.subscription_plan = plan_type
+                user.is_subscription_active = True
+                user.subscription_start_date = datetime.utcnow()
+                user.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+                db.session.commit()
 
             current_app.logger.info(f"Subscription plan updated for user {user.id} and ad account {ad_account.id}")
 
