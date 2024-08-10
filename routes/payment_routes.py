@@ -168,7 +168,61 @@ def handle_checkout_session(session):
                 start_free_trial(user)
         else:
             # Normal checkout handling for logged-in users
-            handle_normal_checkout(user, session, plan_type)
+            user_id = user.id
+            ad_account = AdAccount.query.filter_by(user_id=user.id).first()
+
+            # Normal checkout handling for logged-in users
+            if user.subscription_plan == 'Enterprise' and plan_type == 'Professional':
+                # Delete all ad accounts for downgrade to Professional
+                AdAccount.query.filter_by(user_id=user.id).delete()
+                current_app.logger.info(f"Deleted all ad accounts for user {user.id} as they are downgrading to Professional plan")
+
+                # Create a new ad account for the Professional plan
+                ad_account = AdAccount(user_id=user.id, subscription_plan=plan_type, is_subscription_active=True)
+                ad_account.subscription_start_date = datetime.utcnow()
+                ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+                ad_account.stripe_subscription_id = session['subscription']
+                db.session.add(ad_account)
+            
+            elif user.subscription_plan == 'Enterprise' and plan_type == 'Enterprise':
+                # Add a new ad account for the existing Enterprise plan
+                ad_account = AdAccount(user_id=user.id, subscription_plan=plan_type, is_subscription_active=True)
+                ad_account.subscription_start_date = datetime.utcnow()
+                ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+                ad_account.stripe_subscription_id = session['subscription']
+                db.session.add(ad_account)
+                current_app.logger.info(f"Added new ad account for user {user.id} under the Enterprise plan.")
+            else:
+                # Normal subscription handling
+                if ad_account.stripe_subscription_id and ad_account.is_subscription_active:
+                    try:
+                        stripe.Subscription.delete(ad_account.stripe_subscription_id)
+                        current_app.logger.info(f"Cancelled existing subscription for ad account {ad_account.id}")
+                    except stripe.error.InvalidRequestError as e:
+                        current_app.logger.error(f"Stripe API error while canceling subscription: {e}")
+                        if "No such subscription" in str(e):
+                            current_app.logger.warning(f"Subscription {ad_account.stripe_subscription_id} not found.")
+                            ad_account.stripe_subscription_id = None
+                        else:
+                            raise e
+
+                ad_account.stripe_subscription_id = session['subscription']
+                ad_account.is_subscription_active = True
+                ad_account.subscription_plan = plan_type
+                ad_account.subscription_start_date = datetime.utcnow()
+                ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+
+                if plan_type == 'Free Trial':
+                    start_free_trial(user)
+
+            # Update user subscription details
+            user.subscription_plan = plan_type
+            user.is_subscription_active = True
+            user.subscription_start_date = datetime.utcnow()
+            user.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+            db.session.commit()
+
+            current_app.logger.info(f"Subscription plan updated for user {user.id} and ad account {ad_account.id}")
 
     else:
         # Normal checkout handling for logged-in users
