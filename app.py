@@ -5,9 +5,11 @@ from flask_login import LoginManager
 from flask_cors import CORS
 from datetime import timedelta
 from config import Config
-from models import db, User
+from models import db, User, AdAccount
 from routes import auth, payment
 import os
+from apscheduler.schedulers.background import BackgroundScheduler
+import atexit
 
 app = Flask(__name__, instance_relative_config=True, static_folder='static')
 app.config.from_object(Config)
@@ -36,7 +38,25 @@ def load_user(user_id):
     return User.query.get(int(user_id))
 
 app.register_blueprint(auth, url_prefix='/auth')  # Register auth Blueprint with a prefix
-app.register_blueprint(payment, url_prefix = '/payment')  # Register payment Blueprint without a prefix
+app.register_blueprint(payment, url_prefix='/payment')  # Register payment Blueprint without a prefix
+
+# Function to check and renew subscriptions
+def check_and_renew_subscriptions():
+    with app.app_context():
+        # Get all active ad accounts with active subscriptions
+        active_ad_accounts = AdAccount.query.filter_by(is_subscription_active=True).all()
+
+        for account in active_ad_accounts:
+            # Attempt to auto-renew the subscription if the conditions are met
+            account.auto_renew_subscription()
+
+# Initialize the APScheduler and schedule the job
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=check_and_renew_subscriptions, trigger="interval", days=1)
+scheduler.start()
+
+# Shut down the scheduler when exiting the app
+atexit.register(lambda: scheduler.shutdown())
 
 def create_tables():
     with app.app_context():

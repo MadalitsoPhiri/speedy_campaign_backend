@@ -465,3 +465,121 @@ def auto_login():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@auth.route('/verify_ad_account', methods=['POST'])
+@cross_origin(supports_credentials=True)
+@login_required
+def verify_ad_account():
+    data = request.get_json()
+    ad_account_id = data.get('ad_account_id')
+    access_token = data.get('access_token')
+
+    try:
+        response = requests.get(
+            f'https://graph.facebook.com/v15.0/{ad_account_id}',
+            params={'access_token': access_token}
+        )
+        response.raise_for_status()
+        return jsonify({"valid": True}), 200
+    except requests.exceptions.HTTPError as err:
+        return jsonify({"valid": False, "error": str(err)}), 400
+
+@auth.route('/verify_pixel_id', methods=['POST'])
+@cross_origin(supports_credentials=True)
+@login_required
+def verify_pixel_id():
+    data = request.get_json()
+    pixel_id = data.get('pixel_id')
+    access_token = data.get('access_token')
+
+    try:
+        response = requests.get(
+            f'https://graph.facebook.com/v15.0/{pixel_id}',
+            params={'access_token': access_token}
+        )
+        response.raise_for_status()
+        return jsonify({"valid": True}), 200
+    except requests.exceptions.HTTPError as err:
+        return jsonify({"valid": False, "error": str(err)}), 400
+
+@auth.route('/verify_facebook_page_id', methods=['POST'])
+@cross_origin(supports_credentials=True)
+@login_required
+def verify_facebook_page_id():
+    data = request.get_json()
+    facebook_page_id = data.get('facebook_page_id')
+    access_token = data.get('access_token')
+
+    try:
+        response = requests.get(
+            f'https://graph.facebook.com/v15.0/{facebook_page_id}',
+            params={'access_token': access_token}
+        )
+        response.raise_for_status()
+        return jsonify({"valid": True}), 200
+    except requests.exceptions.HTTPError as err:
+        return jsonify({"valid": False, "error": str(err)}), 400
+
+@auth.route('/verify_app_id', methods=['POST'])
+@cross_origin(supports_credentials=True)
+@login_required
+def verify_app_id():
+    data = request.get_json()
+    app_id = data.get('app_id')
+    access_token = data.get('access_token')
+
+    try:
+        response = requests.get(
+            f'https://graph.facebook.com/v15.0/{app_id}',
+            params={'access_token': access_token}
+        )
+        response.raise_for_status()
+        return jsonify({"valid": True}), 200
+    except requests.exceptions.HTTPError as err:
+        return jsonify({"valid": False, "error": str(err)}), 400
+
+@auth.route('/verify_access_token', methods=['POST'])
+@cross_origin(supports_credentials=True)
+@login_required
+def verify_access_token():
+    data = request.get_json()
+    access_token = data.get('access_token')
+
+    try:
+        response = requests.get(
+            f'https://graph.facebook.com/debug_token',
+            params={'input_token': access_token, 'access_token': access_token}
+        )
+        response.raise_for_status()
+        return jsonify({"valid": True}), 200
+    except requests.exceptions.HTTPError as err:
+        return jsonify({"valid": False, "error": str(err)}), 400
+
+@auth.route('/verify_app_secret', methods=['POST'])
+@cross_origin(supports_credentials=True)
+@login_required
+def verify_app_secret():
+    data = request.get_json()
+    access_token = data.get('access_token')
+    app_secret = data.get('app_secret')
+
+    # Validate input
+    if not access_token or not app_secret:
+        return jsonify({"valid": False, "error": "Access token and App secret are required"}), 400
+
+    # Generate appsecret_proof
+    appsecret_proof = generate_app_secret_proof(access_token, app_secret)
+
+    try:
+        response = requests.get(
+            f'https://graph.facebook.com/v15.0/me',
+            params={'access_token': access_token, 'appsecret_proof': appsecret_proof}
+        )
+        response.raise_for_status()
+        return jsonify({"valid": True}), 200
+    except requests.exceptions.HTTPError as err:
+        return jsonify({"valid": False, "error": str(err)}), 400
+
+def generate_app_secret_proof(access_token, app_secret):
+    import hmac
+    import hashlib
+    return hmac.new(app_secret.encode('utf-8'), access_token.encode('utf-8'), hashlib.sha256).hexdigest()

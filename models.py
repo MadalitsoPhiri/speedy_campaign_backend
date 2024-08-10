@@ -73,6 +73,17 @@ class AdAccount(db.Model):
         if self.subscription_end_date and self.subscription_end_date < datetime.utcnow():
             self.is_subscription_active = False
         return self.is_subscription_active
+    
+    def auto_renew_subscription(self):
+        # Only renew if the subscription is active and the end date has passed
+        if self.is_subscription_active and self.subscription_end_date and self.subscription_end_date < datetime.utcnow():
+            # Update start and end dates to extend for another 30 days
+            self.subscription_start_date = datetime.utcnow()
+            self.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+            self.is_subscription_active = True
+            db.session.commit()
+            return True
+        return False
 
 def start_free_trial(user):
     if user.has_used_free_trial:
