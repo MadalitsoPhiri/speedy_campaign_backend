@@ -213,7 +213,10 @@ def handle_checkout_session(session):
                 ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
 
                 if plan_type == 'Free Trial':
-                    start_free_trial(user)
+                    try:
+                        start_free_trial(user)
+                    except ValueError as e:
+                        current_app.logger.warning(f"Cannot start free trial: {e}")
 
             # Update user subscription details
             user.subscription_plan = plan_type
