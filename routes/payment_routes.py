@@ -129,7 +129,7 @@ def generate_random_password(length=12):
 
 def handle_checkout_session(session):
     plan_type = session['metadata']['plan_type']
-    is_anonymous = session['metadata']['is_anonymous']
+    is_anonymous = session['metadata']['is_anonymous'] == 'True'
     commit_needed = True  # Flag to control whether to commit changes
 
     if is_anonymous:
@@ -575,7 +575,8 @@ def renew_subscription_route():
             metadata={
                 'user_id': current_user.id, 
                 'ad_account_id': ad_account.id,
-                'plan_type': plan_type
+                'plan_type': plan_type,
+                'is_anonymous': False
             }
         )
 
