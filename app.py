@@ -6,7 +6,7 @@ from flask_cors import CORS
 from datetime import timedelta
 from config import Config
 from models import db, User, AdAccount
-from routes import auth, payment
+from routes import auth, payment, default_config  # Import your new routes here
 import os
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
@@ -37,8 +37,10 @@ app.config['REMEMBER_COOKIE_DURATION'] = timedelta(days=30)
 def load_user(user_id):
     return User.query.get(int(user_id))
 
-app.register_blueprint(auth, url_prefix='/auth')  # Register auth Blueprint with a prefix
-app.register_blueprint(payment, url_prefix='/payment')  # Register payment Blueprint without a prefix
+# Register the Blueprints
+app.register_blueprint(auth, url_prefix='/auth')
+app.register_blueprint(payment, url_prefix='/payment')
+app.register_blueprint(default_config, url_prefix='/config')  # Register new routes with a prefix
 
 # Function to check and renew subscriptions
 def check_and_renew_subscriptions():
