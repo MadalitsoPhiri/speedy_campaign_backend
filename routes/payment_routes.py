@@ -86,8 +86,8 @@ def create_checkout_session():
                     'quantity': 1,
                 }],
                 mode='subscription',
-                success_url="http://localhost:3000/pricing-section",
-                cancel_url="http://localhost:3000/pricing-section",
+                success_url="https://quickcampaigns.io/success",
+                cancel_url="https://quickcampaigns.io/pricing-section",
                 metadata={
                     'user_id': current_user.id, 
                     'ad_account_id': ad_account.id,
@@ -105,8 +105,8 @@ def create_checkout_session():
                 }],
                 mode='subscription',
                 subscription_data={'trial_period_days': 5},
-                success_url="http://localhost:3000/pricing-section",
-                cancel_url="http://localhost:3000/pricing-section",
+                success_url="https://quickcampaigns.io/success",
+                cancel_url="https://quickcampaigns.io/pricing-section",
                 metadata={
                     'user_id': current_user.id, 
                     'ad_account_id': ad_account.id,
@@ -486,8 +486,8 @@ def add_ad_account():
                 'quantity': 1,
             }],
             mode='subscription',
-            success_url="http://localhost:3000/pricing-section",
-            cancel_url="http://localhost:3000/pricing-section",
+            success_url="https://quickcampaigns.io/success",
+            cancel_url="https://quickcampaigns.io/pricing-section",
             metadata={'user_id': current_user.id, 'ad_account_id': new_ad_account.id, 'plan_type': 'Enterprise'}
         )
 
@@ -570,8 +570,8 @@ def renew_subscription_route():
                 'quantity': 1,
             }],
             mode='subscription',
-            success_url="http://localhost:3000/pricing-section",
-            cancel_url="http://localhost:3000/pricing-section",
+            success_url="https://quickcampaigns.io/success",
+            cancel_url="https://quickcampaigns.io/pricing-section",
             metadata={
                 'user_id': current_user.id, 
                 'ad_account_id': ad_account.id,
@@ -612,8 +612,8 @@ def create_anonymous_checkout_session():
                     'quantity': 1,
                 }],
                 mode='subscription',
-                success_url=f"http://localhost:5000/auth/auto-login?session_id={{CHECKOUT_SESSION_ID}}",
-                cancel_url="http://localhost:3000/pricing-section",
+                success_url=f"https://backend.quickcampaigns.io/auth/auto-login?session_id={{CHECKOUT_SESSION_ID}}",
+                cancel_url="https://quickcampaigns.io/pricing-section",
                 metadata={
                     'plan_type': plan_type,
                     'is_anonymous': True  # Add a flag to identify this as an anonymous checkout
@@ -629,8 +629,8 @@ def create_anonymous_checkout_session():
                 }],
                 mode='subscription',
                 subscription_data={'trial_period_days': 5},
-                success_url=f"http://localhost:5000/auth/auto-login?session_id={{CHECKOUT_SESSION_ID}}",
-                cancel_url="http://localhost:3000/pricing-section",
+                success_url=f"https://backend.quickcampaigns.io/auth/auto-login?session_id={{CHECKOUT_SESSION_ID}}",
+                cancel_url="https://quickcampaigns.io/pricing-section",
                 metadata={
                     'plan_type': plan_type,
                     'is_anonymous': True  # Add a flag to identify this as an anonymous checkout

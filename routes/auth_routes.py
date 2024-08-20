@@ -191,7 +191,7 @@ def profile():
 
     profile_picture_url = current_user.profile_picture
     if profile_picture_url:
-        profile_picture_url = f"http://localhost:5000/auth/uploads/{profile_picture_url}"
+        profile_picture_url = f"https://backend.quickcampaigns.io/auth/uploads/{profile_picture_url}"
     
     print(f"Profile picture URL being sent to frontend: {profile_picture_url}")  # Log the URL being sent to the frontend
 
@@ -407,7 +407,7 @@ def reset_password(token):
         db.session.commit()
 
         # Redirect to the specified URL after successful reset
-        return redirect('http://localhost:3000/login')  # Redirect to the registration page
+        return redirect('https://quickcampaigns.io/login')  # Redirect to the registration page
     except Exception as e:
         return jsonify({'message': 'The password reset link is invalid or has expired.'}), 400
 
@@ -438,7 +438,7 @@ def verify_email(token):
         login_user(new_user)  # Log the user in immediately after registration
 
         print("User verified and logged in successfully")
-        return redirect('http://localhost:3000/')  # Redirect to localhost:3000 after verification
+        return redirect('https://quickcampaigns.io/')  # Redirect to localhost:3000 after verification
 
     except SignatureExpired:
         return jsonify({'message': 'The verification link has expired.'}), 400
@@ -459,7 +459,7 @@ def auto_login():
         if user:
             login_user(user)
             # Redirect to the frontend URL directly
-            return redirect('http://localhost:3000/')
+            return redirect('https://quickcampaigns.io/')
         else:
             return jsonify({'error': 'User not found'}), 404
     except Exception as e:
@@ -472,6 +472,7 @@ def verify_ad_account():
     data = request.get_json()
     ad_account_id = data.get('ad_account_id')
     access_token = data.get('access_token')
+    print(data)
 
     try:
         response = requests.get(
@@ -583,3 +584,41 @@ def generate_app_secret_proof(access_token, app_secret):
     import hmac
     import hashlib
     return hmac.new(app_secret.encode('utf-8'), access_token.encode('utf-8'), hashlib.sha256).hexdigest()
+
+@auth.route('/facebook', methods=['POST', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
+def facebook_login():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+
+    data = request.get_json()
+    access_token = data.get('accessToken')
+    name = data.get('name')
+    email = data.get('email')
+
+    try:
+        # Check if user already exists
+        user = User.query.filter_by(email=email).first()
+        if user is None:
+            # Create new user
+            user = User(username=name, email=email, password='', is_active=True)
+            db.session.add(user)
+            db.session.commit()
+
+            # Create a default ad account for the new user
+            default_ad_account = AdAccount(user_id=user.id)
+            db.session.add(default_ad_account)
+            db.session.commit()
+
+        # If user exists but has no ad account, create one
+        elif not user.ad_accounts:
+            default_ad_account = AdAccount(user_id=user.id)
+            db.session.add(default_ad_account)
+            db.session.commit()
+
+        login_user(user)
+        return jsonify({'message': 'Logged in successfully', 'user': {'username': user.username, 'email': user.email}}), 200
+
+    except Exception as e:
+        print(f"Failed to login with Facebook: {e}")
+        return jsonify({'message': str(e)}), 401

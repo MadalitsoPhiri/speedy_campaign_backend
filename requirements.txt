@@ -1,0 +1,13 @@
+Flask
+python-dotenv
+Flask-Bcrypt
+Flask-Login
+Flask-CORS
+APScheduler
+SQLAlchemy
+Flask-SQLAlchemy
+itsdangerous
+Werkzeug
+yagmail
+requests
+stripe

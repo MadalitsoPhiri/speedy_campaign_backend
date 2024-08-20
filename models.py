@@ -45,6 +45,20 @@ class User(UserMixin, db.Model):
             user.is_subscription_active = True
 
         return user.is_subscription_active
+    
+    def upgrade_free_trial_to_pro(self):
+        if self.subscription_plan == 'Free Trial' and self.is_subscription_active:
+            if self.subscription_end_date and datetime.utcnow() >= self.subscription_end_date:
+                # Upgrade to Professional Plan
+                renew_subscription(self, 'Professional')
+                
+                # Update all associated ad accounts to Professional
+                for account in self.ad_accounts:
+                    account.subscription_plan = 'Professional Plan'
+                    account.subscription_start_date = datetime.utcnow()
+                    account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+                    account.is_subscription_active = True
+                db.session.commit()
 
 class AdAccount(db.Model):
     id = db.Column(db.Integer, primary_key=True)

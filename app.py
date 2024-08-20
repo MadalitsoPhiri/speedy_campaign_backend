@@ -21,7 +21,7 @@ if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
 # Enable CORS with credentials
-cors = CORS(app, supports_credentials=True, resources={r"/*": {"origins": "http://localhost:3000"}})
+cors = CORS(app, supports_credentials=True, resources={r"/*": {"origins": "https://quickcampaigns.io"}})
 
 # Initialize Flask extensions
 db.init_app(app)
@@ -52,9 +52,19 @@ def check_and_renew_subscriptions():
             # Attempt to auto-renew the subscription if the conditions are met
             account.auto_renew_subscription()
 
+# Function to upgrade free trials to Professional Plan after 5 days
+def upgrade_free_trials():
+    with app.app_context():
+        # Get all users on a free trial
+        users_on_free_trial = User.query.filter_by(subscription_plan='Free Trial', is_subscription_active=True).all()
+        
+        for user in users_on_free_trial:
+            user.upgrade_free_trial_to_pro()
+
 # Initialize the APScheduler and schedule the job
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=check_and_renew_subscriptions, trigger="interval", days=1)
+scheduler.add_job(func=upgrade_free_trials, trigger="interval", days=1)
 scheduler.start()
 
 # Shut down the scheduler when exiting the app
