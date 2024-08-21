@@ -19,7 +19,7 @@ payment = Blueprint('payment', __name__)
 
 load_dotenv()
 
-stripe.verify_ssl_certs = False
+stripe.verify_ssl_certs = True
 
 # Initialize Stripe with your secret key
 stripe.api_key = os.getenv('STRIPE_API_KEY')
@@ -62,7 +62,7 @@ def create_checkout_session():
         return jsonify({'message': 'Plan updated to Enterprise'}), 200
 
     if plan_type == 'Professional':
-        price_id = 'price_1PqF2YJd93BCcOTaH2Vc9fVi'
+        price_id = 'price_1Pklt7Jd93BCcOTaoqb2AZSt'
     elif plan_type == 'Enterprise':
         price_id = 'price_1PkltXJd93BCcOTaUsQQAUbW'
     elif plan_type == 'Free Trial':
