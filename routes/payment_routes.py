@@ -62,14 +62,14 @@ def create_checkout_session():
         return jsonify({'message': 'Plan updated to Enterprise'}), 200
 
     if plan_type == 'Professional':
-        price_id = 'price_1Pklt7Jd93BCcOTaoqb2AZSt'
+        price_id = 'price_1Pj3pZ01UFm1325diqAaUr32'
     elif plan_type == 'Enterprise':
-        price_id = 'price_1PkltXJd93BCcOTaUsQQAUbW'
+        price_id = 'price_1Pj3pq01UFm1325dyNHzvDDX'
     elif plan_type == 'Free Trial':
         if current_user.has_used_free_trial:
             current_app.logger.warning(f"User has already used the Free Trial. User ID: {current_user.id}")
             return jsonify({'error': 'Free Trial already used, please choose a different plan'}), 400
-        price_id = 'price_1Pklt7Jd93BCcOTaoqb2AZSt'
+        price_id = 'price_1Pj3pZ01UFm1325diqAaUr32'
     else:
         current_app.logger.error(f"Invalid plan type received: {plan_type}")
         return jsonify({'error': 'Invalid plan'}), 400
@@ -338,6 +338,7 @@ def stripe_webhook():
 
     # Handle payment failure event
     elif event['type'] == 'invoice.payment_failed':
+        print('failed')
         with current_app.test_request_context():
             cancel_subscription_route()
 
@@ -482,13 +483,13 @@ def add_ad_account():
         session = stripe.checkout.Session.create(
             payment_method_types=['card'],
             line_items=[{
-                'price': 'price_1PkltXJd93BCcOTaUsQQAUbW',  # Enterprise plan price ID
+                'price': 'price_1Pj3pq01UFm1325dyNHzvDDX',  # Enterprise plan price ID
                 'quantity': 1,
             }],
             mode='subscription',
             success_url="https://quickcampaigns.io/success",
             cancel_url="https://quickcampaigns.io/pricing-section",
-            metadata={'user_id': current_user.id, 'ad_account_id': new_ad_account.id, 'plan_type': 'Enterprise'}
+            metadata={'user_id': current_user.id, 'ad_account_id': new_ad_account.id, 'plan_type': 'Enterprise', 'is_anonymous': False}
         )
 
         # Log the session ID to ensure it's being generated
@@ -551,9 +552,9 @@ def renew_subscription_route():
 
     # Determine the price ID based on the plan type
     if plan_type == 'Professional':
-        price_id = 'price_1Pklt7Jd93BCcOTaoqb2AZSt'
+        price_id = 'price_1Pj3pZ01UFm1325diqAaUr32'
     elif plan_type == 'Enterprise':
-        price_id = 'price_1PkltXJd93BCcOTaUsQQAUbW'
+        price_id = 'price_1Pj3pq01UFm1325dyNHzvDDX'
     else:
         return jsonify({'error': 'Invalid plan type'}), 400
 
@@ -594,11 +595,11 @@ def create_anonymous_checkout_session():
 
     # Define price IDs based on plan type
     if plan_type == 'Professional':
-        price_id = 'price_1Pklt7Jd93BCcOTaoqb2AZSt'
+        price_id = 'price_1Pj3pZ01UFm1325diqAaUr32'
     elif plan_type == 'Enterprise':
-        price_id = 'price_1PkltXJd93BCcOTaUsQQAUbW'
+        price_id = 'price_1Pj3pq01UFm1325dyNHzvDDX'
     elif plan_type == 'Free Trial':
-        price_id = 'price_1Pklt7Jd93BCcOTaoqb2AZSt'
+        price_id = 'price_1Pj3pZ01UFm1325diqAaUr32'
     else:
         return jsonify({'error': 'Invalid plan'}), 400
 

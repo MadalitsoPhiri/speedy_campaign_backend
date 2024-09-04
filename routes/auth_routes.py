@@ -219,6 +219,16 @@ def update_ad_account():
         ad_account.app_id = data['app_id']
         ad_account.app_secret = data['app_secret']
         ad_account.access_token = data['access_token']
+        # Fetch ad account name from Facebook
+        try:
+            fb_response = requests.get(
+                f'https://graph.facebook.com/v10.0/{data["ad_account_id"]}?fields=name&access_token={data["access_token"]}'
+            )
+            fb_data = fb_response.json()
+            ad_account.name = fb_data['name']  # Store the ad account name in the database
+        except requests.exceptions.RequestException as e:
+            return jsonify({'message': 'Failed to fetch ad account name from Facebook'}), 400
+
         ad_account.is_bound = True
         db.session.commit()
         return jsonify({'message': 'Ad account updated successfully'}), 200
@@ -237,7 +247,11 @@ def get_ad_account(id):
             'facebook_page_id': ad_account.facebook_page_id,
             'app_id': ad_account.app_id,
             'app_secret': ad_account.app_secret,
-            'access_token': ad_account.access_token
+            'access_token': ad_account.access_token,
+            'is_bound': ad_account.is_bound,  # Include is_bound in the response
+            'name': ad_account.name  # Include the name field in the response
+
+
         }), 200
     return jsonify({'message': 'Ad account not found or access denied'}), 404
 
@@ -622,3 +636,4 @@ def facebook_login():
     except Exception as e:
         print(f"Failed to login with Facebook: {e}")
         return jsonify({'message': str(e)}), 401
+

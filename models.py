@@ -3,6 +3,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
 from sqlalchemy import Text
 from datetime import datetime, timedelta
+from sqlalchemy import event
 
 db = SQLAlchemy()
 
@@ -76,6 +77,7 @@ class AdAccount(db.Model):
     subscription_end_date = db.Column(db.DateTime, nullable=True, default=None)
     is_subscription_active = db.Column(db.Boolean, default=False)
     stripe_subscription_id = db.Column(db.String(255), nullable=True)  # Store Stripe subscription ID
+    name = db.Column(db.String(255), nullable=False)  # Add the name field
 
     def get_default_config(self):
         return json.loads(self.default_config) if self.default_config else {}
@@ -98,6 +100,12 @@ class AdAccount(db.Model):
             db.session.commit()
             return True
         return False
+    
+# Event listener for setting the name before inserting
+@event.listens_for(AdAccount, 'before_insert')
+def set_ad_account_name(mapper, connect, target):
+    ad_account_count = AdAccount.query.filter_by(user_id=target.user_id).count()
+    target.name = f"Ad Account {ad_account_count + 1}"
 
 def start_free_trial(user):
     if user.has_used_free_trial:
