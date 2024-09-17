@@ -11,3 +11,4 @@ Werkzeug
 yagmail
 requests
 stripe
+facebook-business

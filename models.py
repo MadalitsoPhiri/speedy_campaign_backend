@@ -78,6 +78,7 @@ class AdAccount(db.Model):
     is_subscription_active = db.Column(db.Boolean, default=False)
     stripe_subscription_id = db.Column(db.String(255), nullable=True)  # Store Stripe subscription ID
     name = db.Column(db.String(255), nullable=False)  # Add the name field
+    business_manager_id = db.Column(db.String(255), nullable=True)  # Add the BM ID field
 
     def get_default_config(self):
         return json.loads(self.default_config) if self.default_config else {}
