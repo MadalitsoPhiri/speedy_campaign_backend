@@ -11,6 +11,9 @@ import os
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
 
+
+REACT_APP_API_URL=os.getenv('REACT_APP_API_URL')
+
 app = Flask(__name__, instance_relative_config=True, static_folder='static')
 app.config.from_object(Config)
 app.config.from_pyfile('config.py', silent=True)
@@ -21,7 +24,7 @@ if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
 # Enable CORS with credentials
-cors = CORS(app, supports_credentials=True, resources={r"/*": {"origins": "https://quickcampaigns.io"}})
+cors = CORS(app, supports_credentials=True, resources={r"/*": {"origins": REACT_APP_API_URL}})
 
 # Initialize Flask extensions
 db.init_app(app)

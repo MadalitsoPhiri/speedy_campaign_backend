@@ -24,6 +24,9 @@ stripe.verify_ssl_certs = True
 # Initialize Stripe with your secret key
 stripe.api_key = os.getenv('STRIPE_API_KEY')
 
+REACT_APP_API_URL=os.getenv('REACT_APP_API_URL')
+BACKEND_API_URL=os.getenv('BACKEND_API_URL')
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -86,8 +89,8 @@ def create_checkout_session():
                     'quantity': 1,
                 }],
                 mode='subscription',
-                success_url="https://quickcampaigns.io/success",
-                cancel_url="https://quickcampaigns.io/pricing-section",
+                success_url=f"{REACT_APP_API_URL}/success",
+                cancel_url=f"{REACT_APP_API_URL}/pricing-section",
                 metadata={
                     'user_id': current_user.id, 
                     'ad_account_id': ad_account.id,
@@ -105,8 +108,8 @@ def create_checkout_session():
                 }],
                 mode='subscription',
                 subscription_data={'trial_period_days': 5},
-                success_url="https://quickcampaigns.io/success",
-                cancel_url="https://quickcampaigns.io/pricing-section",
+                success_url=f"{REACT_APP_API_URL}/success",
+                cancel_url=f"{REACT_APP_API_URL}/pricing-section",
                 metadata={
                     'user_id': current_user.id, 
                     'ad_account_id': ad_account.id,
@@ -487,8 +490,8 @@ def add_ad_account():
                 'quantity': 1,
             }],
             mode='subscription',
-            success_url="https://quickcampaigns.io/success",
-            cancel_url="https://quickcampaigns.io/pricing-section",
+            success_url=f"{REACT_APP_API_URL}/success",
+            cancel_url=f"{REACT_APP_API_URL}/pricing-section",
             metadata={'user_id': current_user.id, 'ad_account_id': new_ad_account.id, 'plan_type': 'Enterprise', 'is_anonymous': False}
         )
 
@@ -571,8 +574,8 @@ def renew_subscription_route():
                 'quantity': 1,
             }],
             mode='subscription',
-            success_url="https://quickcampaigns.io/success",
-            cancel_url="https://quickcampaigns.io/pricing-section",
+            success_url=f"{REACT_APP_API_URL}/success",
+            cancel_url=f"{REACT_APP_API_URL}/pricing-section",
             metadata={
                 'user_id': current_user.id, 
                 'ad_account_id': ad_account.id,
@@ -613,8 +616,8 @@ def create_anonymous_checkout_session():
                     'quantity': 1,
                 }],
                 mode='subscription',
-                success_url=f"https://backend.quickcampaigns.io/auth/auto-login?session_id={{CHECKOUT_SESSION_ID}}",
-                cancel_url="https://quickcampaigns.io/pricing-section",
+                success_url=f"{BACKEND_API_URL}/auth/auto-login?session_id={{CHECKOUT_SESSION_ID}}",
+                cancel_url=f"{REACT_APP_API_URL}/pricing-section",
                 metadata={
                     'plan_type': plan_type,
                     'is_anonymous': True  # Add a flag to identify this as an anonymous checkout
@@ -630,8 +633,8 @@ def create_anonymous_checkout_session():
                 }],
                 mode='subscription',
                 subscription_data={'trial_period_days': 5},
-                success_url=f"https://backend.quickcampaigns.io/auth/auto-login?session_id={{CHECKOUT_SESSION_ID}}",
-                cancel_url="https://quickcampaigns.io/pricing-section",
+                success_url=f"{BACKEND_API_URL}/auth/auto-login?session_id={{CHECKOUT_SESSION_ID}}",
+                cancel_url=f"{REACT_APP_API_URL}/pricing-section",
                 metadata={
                     'plan_type': plan_type,
                     'is_anonymous': True  # Add a flag to identify this as an anonymous checkout

@@ -29,6 +29,9 @@ stripe.api_key = os.getenv('STRIPE_API_KEY')
 YAGMAIL_USER = os.getenv('YAGMAIL_USER')
 YAGMAIL_PASSWORD = os.getenv('YAGMAIL_PASSWORD')
 
+REACT_APP_API_URL=os.getenv('REACT_APP_API_URL')
+BACKEND_API_URL=os.getenv('BACKEND_API_URL')
+
 if not YAGMAIL_USER or not YAGMAIL_PASSWORD:
     raise RuntimeError("YAGMAIL_USER and YAGMAIL_PASSWORD must be set as environment variables.")
 yag = yagmail.SMTP(YAGMAIL_USER, YAGMAIL_PASSWORD)
@@ -191,7 +194,7 @@ def profile():
 
     profile_picture_url = current_user.profile_picture
     if profile_picture_url:
-        profile_picture_url = f"https://backend.quickcampaigns.io/auth/uploads/{profile_picture_url}"
+        profile_picture_url = f"{BACKEND_API_URL}/auth/uploads/{profile_picture_url}"
     
     print(f"Profile picture URL being sent to frontend: {profile_picture_url}")  # Log the URL being sent to the frontend
 
@@ -421,7 +424,7 @@ def reset_password(token):
         db.session.commit()
 
         # Redirect to the specified URL after successful reset
-        return redirect('https://quickcampaigns.io')  # Redirect to the registration page
+        return redirect(REACT_APP_API_URL)  # Redirect to the registration page
     except Exception as e:
         return jsonify({'message': 'The password reset link is invalid or has expired.'}), 400
 
@@ -452,7 +455,7 @@ def verify_email(token):
         login_user(new_user)  # Log the user in immediately after registration
 
         print("User verified and logged in successfully")
-        return redirect('https://quickcampaigns.io/')  # Redirect to localhost:3000 after verification
+        return redirect('REACT_APP_API_URL')  # Redirect to localhost:3000 after verification
 
     except SignatureExpired:
         return jsonify({'message': 'The verification link has expired.'}), 400
@@ -473,7 +476,7 @@ def auto_login():
         if user:
             login_user(user)
             # Redirect to the frontend URL directly
-            return redirect('https://quickcampaigns.io/')
+            return redirect(REACT_APP_API_URL)
         else:
             return jsonify({'error': 'User not found'}), 404
     except Exception as e:
