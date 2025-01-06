@@ -1,4 +1,5 @@
 from flask import Flask
+# from flask_migrate import Migrate
 from dotenv import load_dotenv
 from flask_bcrypt import Bcrypt
 from flask_login import LoginManager
@@ -6,7 +7,7 @@ from flask_cors import CORS
 from datetime import timedelta
 from config import Config
 from models import db, User, AdAccount
-from routes import auth, payment, default_config, targeting  # Import your new routes here
+from routes import auth, payment, default_config, targeting, user_management  # Import your new routes here
 import os
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
@@ -28,6 +29,7 @@ cors = CORS(app, supports_credentials=True, resources={r"/*": {"origins": REACT_
 
 # Initialize Flask extensions
 db.init_app(app)
+# migrate = Migrate(app, db)
 bcrypt = Bcrypt(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'auth.login'
@@ -45,6 +47,8 @@ app.register_blueprint(auth, url_prefix='/auth')
 app.register_blueprint(payment, url_prefix='/payment')
 app.register_blueprint(default_config, url_prefix='/config')  # Register new routes with a prefix
 app.register_blueprint(targeting, url_prefix='/targeting')
+app.register_blueprint(user_management, url_prefix='/user_management')
+
 
 # Function to check and renew subscriptions
 def check_and_renew_subscriptions():

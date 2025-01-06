@@ -36,6 +36,38 @@ if not YAGMAIL_USER or not YAGMAIL_PASSWORD:
     raise RuntimeError("YAGMAIL_USER and YAGMAIL_PASSWORD must be set as environment variables.")
 yag = yagmail.SMTP(YAGMAIL_USER, YAGMAIL_PASSWORD)
 
+def verify_recaptcha_token(recaptcha_token):
+    """
+    Verify the reCAPTCHA token with Google's reCAPTCHA API.
+    
+    Args:
+        recaptcha_token (str): The token from the client-side reCAPTCHA.
+
+    Returns:
+        bool: True if the token is valid, False if invalid or not provided.
+    """
+    if not recaptcha_token:
+        print("No reCAPTCHA token provided. Skipping verification.")
+        return True  # Allow requests without reCAPTCHA if not enforced
+    
+    secret_key = os.getenv('RECAPTCHA_SECRET_KEY')
+
+    if not secret_key:
+        print("Error: RECAPTCHA_SECRET_KEY is missing in the app configuration.")
+        return False  # Fail verification if secret key is missing
+
+    verify_url = 'https://www.google.com/recaptcha/api/siteverify'
+    payload = {'secret': secret_key, 'response': recaptcha_token}
+    
+    try:
+        response = requests.post(verify_url, data=payload)
+        result = response.json()
+        print(f"reCAPTCHA verification result: {result}")
+        return result.get('success', False)
+    except Exception as e:
+        print(f"Error verifying reCAPTCHA token: {e}")
+        return False
+
 @auth.route('/register', methods=['POST', 'OPTIONS'])
 @cross_origin(supports_credentials=True)
 def register():
@@ -43,7 +75,11 @@ def register():
         return jsonify({}), 200
 
     data = request.get_json()
-    print(f"Received data: {data}")
+
+    # Verify the reCAPTCHA token
+    recaptcha_token = data.get('recaptcha')
+    if not verify_recaptcha_token(recaptcha_token):
+        return jsonify({'message': 'Invalid reCAPTCHA token. Please verify you are human.'}), 400
 
     user = User.query.filter_by(email=data['email']).first()
     print(f"User found: {user}")
@@ -74,6 +110,12 @@ def login():
         return jsonify({}), 200
 
     data = request.get_json()
+
+    # Verify the reCAPTCHA token
+    recaptcha_token = data.get('recaptcha')
+    if not verify_recaptcha_token(recaptcha_token):
+        return jsonify({'message': 'Invalid reCAPTCHA token. Please verify you are human.'}), 400
+
     user = User.query.filter_by(email=data['email']).first()
 
     if not user:
@@ -262,7 +304,7 @@ def get_ad_account(id):
 @cross_origin(supports_credentials=True)
 @login_required
 def get_ad_accounts():
-    ad_accounts = AdAccount.query.filter_by(user_id=current_user.id).all()
+    ad_accounts = AdAccount.query.filter_by(user_id=current_user.id).order_by(AdAccount.id.asc()).all()
     ad_accounts_data = [{'id': account.id, 'ad_account_id': account.ad_account_id, 'pixel_id': account.pixel_id, 'facebook_page_id': account.facebook_page_id, 'app_id': account.app_id, 'app_secret': account.app_secret, 'access_token': account.access_token, 'is_bound': account.is_bound, 'business_manager_id': account.business_manager_id} for account in ad_accounts]
     return jsonify({'ad_accounts': ad_accounts_data}), 200
 
@@ -455,7 +497,7 @@ def verify_email(token):
         login_user(new_user)  # Log the user in immediately after registration
 
         print("User verified and logged in successfully")
-        return redirect('REACT_APP_API_URL')  # Redirect to localhost:3000 after verification
+        return redirect(REACT_APP_API_URL)  # Redirect to localhost:3000 after verification
 
     except SignatureExpired:
         return jsonify({'message': 'The verification link has expired.'}), 400

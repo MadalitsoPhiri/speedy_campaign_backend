@@ -26,6 +26,9 @@ stripe.api_key = os.getenv('STRIPE_API_KEY')
 
 REACT_APP_API_URL=os.getenv('REACT_APP_API_URL')
 BACKEND_API_URL=os.getenv('BACKEND_API_URL')
+STRIPE_PROFESSIONAL_PLAN_ID=os.getenv('STRIPE_PROFESSIONAL_PLAN_ID')
+STRIPE_ENTERPRISE_PLAN_ID=os.getenv('STRIPE_ENTERPRISE_PLAN_ID')
+STRIPE_TEST_PLAN_ID=os.getenv('STRIPE_TEST_PLAN_ID')
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -65,14 +68,14 @@ def create_checkout_session():
         return jsonify({'message': 'Plan updated to Enterprise'}), 200
 
     if plan_type == 'Professional':
-        price_id = 'price_1Pj3pZ01UFm1325diqAaUr32'
+        price_id = STRIPE_PROFESSIONAL_PLAN_ID
     elif plan_type == 'Enterprise':
-        price_id = 'price_1Pj3pq01UFm1325dyNHzvDDX'
+        price_id = STRIPE_ENTERPRISE_PLAN_ID
     elif plan_type == 'Free Trial':
         if current_user.has_used_free_trial:
             current_app.logger.warning(f"User has already used the Free Trial. User ID: {current_user.id}")
             return jsonify({'error': 'Free Trial already used, please choose a different plan'}), 400
-        price_id = 'price_1Pj3pZ01UFm1325diqAaUr32'
+        price_id = STRIPE_PROFESSIONAL_PLAN_ID
     else:
         current_app.logger.error(f"Invalid plan type received: {plan_type}")
         return jsonify({'error': 'Invalid plan'}), 400
@@ -341,9 +344,12 @@ def stripe_webhook():
 
     # Handle payment failure event
     elif event['type'] == 'invoice.payment_failed':
-        print('failed')
-        with current_app.test_request_context():
-            cancel_subscription_route()
+        # Log the failure without custom subscription cancellation
+        subscription_id = event['data']['object']['subscription']
+        current_app.logger.warning(f"Payment failed for subscription {subscription_id}")
+        # print('failed')
+        # with current_app.test_request_context():
+        #     cancel_subscription_route()
 
     return jsonify({'status': 'success'}), 200
 
@@ -486,7 +492,7 @@ def add_ad_account():
         session = stripe.checkout.Session.create(
             payment_method_types=['card'],
             line_items=[{
-                'price': 'price_1Pj3pq01UFm1325dyNHzvDDX',  # Enterprise plan price ID
+                'price': STRIPE_ENTERPRISE_PLAN_ID,  # Enterprise plan price ID
                 'quantity': 1,
             }],
             mode='subscription',
@@ -555,9 +561,9 @@ def renew_subscription_route():
 
     # Determine the price ID based on the plan type
     if plan_type == 'Professional':
-        price_id = 'price_1Pj3pZ01UFm1325diqAaUr32'
+        price_id = STRIPE_PROFESSIONAL_PLAN_ID
     elif plan_type == 'Enterprise':
-        price_id = 'price_1Pj3pq01UFm1325dyNHzvDDX'
+        price_id = STRIPE_ENTERPRISE_PLAN_ID
     else:
         return jsonify({'error': 'Invalid plan type'}), 400
 
@@ -598,11 +604,11 @@ def create_anonymous_checkout_session():
 
     # Define price IDs based on plan type
     if plan_type == 'Professional':
-        price_id = 'price_1Pj3pZ01UFm1325diqAaUr32'
+        price_id = STRIPE_PROFESSIONAL_PLAN_ID
     elif plan_type == 'Enterprise':
-        price_id = 'price_1Pj3pq01UFm1325dyNHzvDDX'
+        price_id = STRIPE_ENTERPRISE_PLAN_ID
     elif plan_type == 'Free Trial':
-        price_id = 'price_1Pj3pZ01UFm1325diqAaUr32'
+        price_id = STRIPE_PROFESSIONAL_PLAN_ID
     else:
         return jsonify({'error': 'Invalid plan'}), 400
 

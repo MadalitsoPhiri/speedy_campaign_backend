@@ -4,14 +4,18 @@ from flask_login import UserMixin
 from sqlalchemy import Text
 from datetime import datetime, timedelta
 from sqlalchemy import event
+import stripe
+import os
+
+stripe.api_key = os.getenv('STRIPE_API_KEY')
 
 db = SQLAlchemy()
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(150), nullable=False)
-    email = db.Column(db.String(150), unique=True, nullable=False)
-    password = db.Column(db.String(150), nullable=False)
+    email = db.Column(db.String(255), unique=True, nullable=False)
+    password = db.Column(db.String(255), nullable=False)
     is_active = db.Column(db.Boolean, default=False)  # Set to False by default until email verification
     profile_picture = db.Column(db.String(150))
     ad_accounts = db.relationship('AdAccount', backref='user', lazy=True)
@@ -91,16 +95,41 @@ class AdAccount(db.Model):
             self.is_subscription_active = False
         return self.is_subscription_active
     
+    
     def auto_renew_subscription(self):
-        # Only renew if the subscription is active and the end date has passed
+        if self.stripe_subscription_id:
+            try:
+                # Check if the subscription exists in Stripe
+                stripe_subscription = stripe.Subscription.retrieve(self.stripe_subscription_id)
+                if stripe_subscription['status'] != 'active':
+                    # If the subscription exists but is not active, cancel locally
+                    print(f"Stripe subscription {self.stripe_subscription_id} is not active. Cancelling locally.")
+                    self.cancel_subscription()
+                    return False
+            except stripe.error.InvalidRequestError:
+                # Subscription does not exist in Stripe
+                print(f"Stripe subscription {self.stripe_subscription_id} not found. Cancelling locally.")
+                self.cancel_subscription()
+                return False
+
+        # Proceed with auto-renew if the subscription is valid and the end date has passed
         if self.is_subscription_active and self.subscription_end_date and self.subscription_end_date < datetime.utcnow():
-            # Update start and end dates to extend for another 30 days
+            # Extend the subscription for another 30 days
             self.subscription_start_date = datetime.utcnow()
             self.subscription_end_date = datetime.utcnow() + timedelta(days=30)
             self.is_subscription_active = True
             db.session.commit()
             return True
         return False
+
+    def cancel_subscription(self):
+        self.is_subscription_active = False
+        self.subscription_plan = None
+        self.subscription_start_date = None
+        self.subscription_end_date = None
+        self.stripe_subscription_id = None
+        db.session.commit()
+
     
 # Event listener for setting the name before inserting
 @event.listens_for(AdAccount, 'before_insert')
