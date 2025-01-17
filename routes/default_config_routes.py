@@ -3,8 +3,11 @@ from flask_login import login_required, current_user
 from flask_cors import cross_origin
 from models import AdAccount, db
 import requests
+import os
 
 default_config = Blueprint('default_config', __name__)
+APP_ID = os.getenv('APP_ID')
+APP_SECRET = os.getenv('APP_SECRET')
 
 # Endpoint to exchange short-lived token for long-lived token and store it in the database
 @default_config.route('/ad_account/<int:id>/exchange-token', methods=['POST'])
@@ -13,8 +16,8 @@ default_config = Blueprint('default_config', __name__)
 def exchange_token(id):
     data = request.get_json()
     short_lived_token = data.get('access_token')
-    app_id = '1153977715716035'  # Hardcoded App ID
-    app_secret = '30d73e973e26535fc1e445f2e0b16cb7'  # Hardcoded App Secret
+    app_id = APP_ID
+    app_secret = APP_SECRET
 
     if not short_lived_token:
         return jsonify({'message': 'Access token is required'}), 400

@@ -94,6 +94,7 @@ def register():
 
     # Generate the verification link
     verification_link = url_for('auth.verify_email', token=token, _external=True)
+    # print(verification_link)
 
     # Send verification email
     subject = 'Verify your email'
