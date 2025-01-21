@@ -245,16 +245,39 @@ def handle_checkout_session(session):
 
             current_app.logger.info(f"Subscription plan updated for user {user.id} and ad account {ad_account.id}")
 
-    else:
+    else:  
+        try:
+            metadata = session.get('metadata', {})
+            action = metadata.get('action')
+            new_ad_account = None  # Initialize to None
+
+            if action == 'add_ad_account':
+                new_ad_account = AdAccount(
+                    user_id=metadata['user_id'],
+                    is_bound=metadata.get('is_bound', 'false').lower() == 'true'
+                )
+                db.session.add(new_ad_account)
+                db.session.commit()
+            else:
+                current_app.logger.info(f"Checkout session completed for action: {action}")
+
+        except Exception as e:
+            current_app.logger.error(f"Error handling checkout session: {str(e)}") 
+
         # Normal checkout handling for logged-in users
         user_id = session['metadata']['user_id']
-        ad_account_id = session['metadata']['ad_account_id']
+        if new_ad_account:
+            ad_account_id = new_ad_account.id
+            print(ad_account_id)
+        else:
+            ad_account_id = session['metadata']['ad_account_id']     
 
         user = User.query.get(user_id)
         ad_account = AdAccount.query.get(ad_account_id)
 
         if user and ad_account:
-            handle_normal_checkout(user, session, plan_type)
+            handle_normal_checkout(user, session, plan_type, ad_account_id)
+            pass
 
 def log_user_and_ad_accounts(user):
     # Log user information
@@ -270,8 +293,7 @@ def log_user_and_ad_accounts(user):
             f"Stripe Subscription ID: {ad_account.stripe_subscription_id}"
         )
 
-def handle_normal_checkout(user, session, plan_type):
-    ad_account_id = session['metadata']['ad_account_id']
+def handle_normal_checkout(user, session, plan_type, ad_account_id):
     ad_account = AdAccount.query.get(ad_account_id)
 
     if user.subscription_plan == 'Enterprise' and plan_type == 'Professional':
@@ -473,43 +495,34 @@ def start_free_trial_route():
 @login_required
 def add_ad_account():
     try:
-        # Step 1: Create the new ad account
-        data = request.get_json()
-        new_ad_account = AdAccount(
-            user_id=current_user.id,
-            ad_account_id=data.get('ad_account_id'),
-            pixel_id=data.get('pixel_id'),
-            facebook_page_id=data.get('facebook_page_id'),
-            app_id=data.get('app_id'),
-            app_secret=data.get('app_secret'),
-            access_token=data.get('access_token'),
-            is_bound=data.get('is_bound', False)
-        )
-        db.session.add(new_ad_account)
-        db.session.commit()
 
-        # Step 2: Create a Stripe checkout session
+        # Create a Stripe checkout session
         session = stripe.checkout.Session.create(
             payment_method_types=['card'],
             line_items=[{
-                'price': STRIPE_ENTERPRISE_PLAN_ID,  # Enterprise plan price ID
+                'price': STRIPE_ENTERPRISE_PLAN_ID,
                 'quantity': 1,
             }],
             mode='subscription',
             success_url=f"{REACT_APP_API_URL}/success",
             cancel_url=f"{REACT_APP_API_URL}/pricing-section",
-            metadata={'user_id': current_user.id, 'ad_account_id': new_ad_account.id, 'plan_type': 'Enterprise', 'is_anonymous': False}
+            metadata={
+                'user_id': current_user.id,
+                'action': 'add_ad_account',  # Add specific action metadata
+                'plan_type': 'Enterprise',
+                'is_anonymous': False
+            }
         )
 
-        # Log the session ID to ensure it's being generated
+        # Log the session ID
         current_app.logger.info(f"Stripe session created with ID: {session.id}")
 
         # Return the session ID to the frontend
         return jsonify({'sessionId': session.id}), 200
 
     except Exception as e:
-        current_app.logger.error(f"Error creating ad account and checkout session: {str(e)}")
-        return jsonify({'error': 'Failed to create a new ad account and checkout session'}), 500
+        current_app.logger.error(f"Error creating Stripe checkout session: {str(e)}")
+        return jsonify({'error': 'Failed to create checkout session'}), 500
 
 @payment.route('/user-subscription-status', methods=['GET'])
 @cross_origin(supports_credentials=True)
@@ -622,7 +635,7 @@ def create_anonymous_checkout_session():
                     'quantity': 1,
                 }],
                 mode='subscription',
-                success_url=f"{BACKEND_API_URL}/auth/auto-login?session_id={{CHECKOUT_SESSION_ID}}",
+                success_url=f"{REACT_APP_API_URL}/registration?session_id={{CHECKOUT_SESSION_ID}}",
                 cancel_url=f"{REACT_APP_API_URL}/pricing-section",
                 metadata={
                     'plan_type': plan_type,
@@ -639,7 +652,7 @@ def create_anonymous_checkout_session():
                 }],
                 mode='subscription',
                 subscription_data={'trial_period_days': 5},
-                success_url=f"{BACKEND_API_URL}/auth/auto-login?session_id={{CHECKOUT_SESSION_ID}}",
+                success_url=f"{REACT_APP_API_URL}/registration?session_id={{CHECKOUT_SESSION_ID}}",
                 cancel_url=f"{REACT_APP_API_URL}/pricing-section",
                 metadata={
                     'plan_type': plan_type,
@@ -650,5 +663,22 @@ def create_anonymous_checkout_session():
 
     except Exception as e:
         current_app.logger.error(f"Stripe API error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+    
+@payment.route('/get-checkout-session', methods=['GET'])
+def get_checkout_session():
+    session_id = request.args.get('session_id')
+    
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+        customer_email = session.get('customer_details', {}).get('email', '')
+        customer_name = session.get('customer_details', {}).get('name', '')
+
+        if not customer_email or not customer_name:
+            return jsonify({'error': 'No customer details found'}), 400
+
+        return jsonify({'email': customer_email, 'name': customer_name})
+
+    except Exception as e:
         return jsonify({'error': str(e)}), 500
 

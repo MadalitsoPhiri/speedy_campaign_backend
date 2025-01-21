@@ -12,6 +12,10 @@ import os
 import requests
 from datetime import datetime, timedelta
 import stripe
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import uuid
 
 auth = Blueprint('auth', __name__)
 
@@ -25,16 +29,27 @@ if not os.path.exists(UPLOAD_FOLDER):
 # Initialize Stripe with your secret key
 stripe.api_key = os.getenv('STRIPE_API_KEY')
 
-# Yagmail setup
-YAGMAIL_USER = os.getenv('YAGMAIL_USER')
-YAGMAIL_PASSWORD = os.getenv('YAGMAIL_PASSWORD')
-
 REACT_APP_API_URL=os.getenv('REACT_APP_API_URL')
 BACKEND_API_URL=os.getenv('BACKEND_API_URL')
+
+# Yagmail setup
+YAGMAIL_USER = os.getenv('EMAIL_USER')
+YAGMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD')
 
 if not YAGMAIL_USER or not YAGMAIL_PASSWORD:
     raise RuntimeError("YAGMAIL_USER and YAGMAIL_PASSWORD must be set as environment variables.")
 yag = yagmail.SMTP(YAGMAIL_USER, YAGMAIL_PASSWORD)
+
+# Load SMTP credentials from environment variables
+smtp_user = os.getenv('EMAIL_USER')  # Full email address
+smtp_password = os.getenv('EMAIL_PASSWORD')  # App password or account password
+
+if not smtp_user or not smtp_password:
+    raise RuntimeError("SMTP_USER and SMTP_PASSWORD must be set as environment variables.")
+
+# Outlook SMTP configuration
+smtp_server = "smtp.office365.com"
+smtp_port = 587
 
 def verify_recaptcha_token(recaptcha_token):
     """
@@ -90,18 +105,70 @@ def register():
 
     # Generate a token with the email and password
     serializer = URLSafeTimedSerializer(current_app.config['SECRET_KEY'])
-    token = serializer.dumps({'email': data['email'], 'password': data['password'], 'username': data['name']}, salt='email-verification')
+    hashed_password = generate_password_hash(data['password'], method='pbkdf2:sha256')
+    token = serializer.dumps({'email': data['email'], 'password': hashed_password, 'username': data['name']}, salt='email-verification')
 
     # Generate the verification link
     verification_link = url_for('auth.verify_email', token=token, _external=True)
-    # print(verification_link)
 
-    # Send verification email
-    subject = 'Verify your email'
-    body = f'Please click the following link to verify your email and complete your registration: {verification_link}'
-    yag.send(to=data['email'], subject=subject, contents=body)
+    # Email details
+    subject = 'Welcome to QuickCampaigns – Verify Your Email'
+    to_email = data['email']
+    html_content =f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="font-family: 'Poppins', sans-serif; background-color: #f9f9f9; margin: 0; padding: 0; color: #333;">
+            <div style="max-width: 640px; margin: 20px auto; border: 3px solid #ccc; background-color: #ffffff; padding: 20px; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);">
+                <div style="max-width: 600px; margin: 0 auto;">
+                    <div style="text-align: center; font-size: 16px; color: #555;">
+                        <p style="margin: 0 0 20px; color: #333;">Hi {data['name']},</p>
+                        <p style="margin: 0 0 20px; color: #555;">
+                            Your <a href="https://quickcampaigns.io" style="color: #5356FF; text-decoration: none; font-weight: bold;">QuickCampaigns</a> account is live! Start creating lightning-fast Facebook Ads campaigns today.
+                        </p>
+                        <p style="margin: 30px 0; color: #333;">Click the button below to verify your email and get started:</p>
+                        <a href="{verification_link}" 
+                        style="display: inline-block; padding: 12px 30px; font-size: 16px; font-weight: 500; color: #FFFFFF; text-decoration: none; border-radius: 8px; background-color: #5356FF;">
+                        Verify Account
+                        </a>
+                        <p style="margin: 20px 0; font-size: 15px; color: #777;">Cheers,<br>The QuickCampaigns Team</p>
+                    </div>
+                    <div style="font-size: 14px; color: #999; text-align: center; margin-top: 20px;">
+                        <p style="margin: 0;">&copy; {datetime.utcnow().year} QuickCampaigns. All rights reserved.</p>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
 
-    print("Verification email sent")
+
+
+    # Create the email message
+    msg = MIMEText(html_content, "html")
+    msg["From"] = smtp_user
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg["Message-ID"] = f"<{uuid.uuid4()}@quickcampaigns.io>"
+    msg["X-Priority"] = "3"
+    msg["X-Entity-Ref-ID"] = f"{uuid.uuid4()}"
+    msg["X-Mailer"] = "QuickCampaignsMailer"
+
+    # Send the email
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.set_debuglevel(1)  # Enable verbose output for debugging
+            server.starttls()  # Start TLS encryption
+            server.login(smtp_user, smtp_password)  # Authenticate with the SMTP server
+            server.send_message(msg)  # Send the email
+        print("Verification email sent")
+    except smtplib.SMTPAuthenticationError as e:
+        print(f"SMTP Authentication Error: {e}")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
     return jsonify({'message': 'A verification email has been sent to your email address. Please verify your email to complete registration.'}), 200
 
 @auth.route('/login', methods=['POST', 'OPTIONS'])
@@ -289,6 +356,7 @@ def get_ad_account(id):
     ad_account = AdAccount.query.get(id)
     if ad_account and ad_account.user_id == current_user.id:
         return jsonify({
+            'id': ad_account.id,
             'ad_account_id': ad_account.ad_account_id,
             'pixel_id': ad_account.pixel_id,
             'facebook_page_id': ad_account.facebook_page_id,
@@ -431,43 +499,99 @@ def forgot_password():
         token = serializer.dumps({'email': user.email, 'new_password': data['newPassword']}, salt='password-reset')
 
         # Generate a reset link
-        reset_link = url_for('auth.reset_password', token=token, _external=True)
+        reset_link = f"{REACT_APP_API_URL}/reset-password?token={token}"
 
         # Send reset password email
-        subject = 'Password Reset Request'
-        body = f'Please click the following link to reset your password: {reset_link}'
-        yag.send(to=user.email, subject=subject, contents=body)
+        subject = ' Reset Your Password'
+        to_email = user.email
+        html_content =f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            </head>
+            <body style="font-family: 'Poppins', sans-serif; background-color: #f9f9f9; margin: 0; padding: 0; color: #333;">
+                <div style="max-width: 640px; margin: 20px auto; border: 3px solid #ccc; background-color: #ffffff; padding: 20px; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);">
+                    <div style="max-width: 600px; margin: 0 auto;">
+                        <div style="text-align: center; font-size: 16px; color: #555;">
+                            <p style="margin: 0 0 20px; color: #333;">Hi {user.username},</p>
+                            <p style="margin: 0 0 20px; color: #555;">
+                                Need to reset your password? No problem.
+                            </p>
+                            <p style="margin: 30px 0; color: #333;">Click the button below to set a new password:</p>
+                            <a href="{reset_link}" 
+                            style="display: inline-block; padding: 12px 30px; font-size: 16px; font-weight: 500; color: #FFFFFF; text-decoration: none; border-radius: 8px; background-color: #5356FF;">
+                            Reset password
+                            </a>
+                            <p style="margin: 20px 0 20px; color: #555;">
+                                If you didn’t request this, you can safely ignore this email.
+                            </p>
+                            <p style="margin: 20px 0; font-size: 15px; color: #777;">Cheers,<br>The QuickCampaigns Team</p>
+                        </div>
+                        <div style="font-size: 14px; color: #999; text-align: center; margin-top: 20px;">
+                            <p style="margin: 0;">&copy; {datetime.utcnow().year} QuickCampaigns. All rights reserved.</p>
+                        </div>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+
+        # Create the email message
+        msg = MIMEText(html_content, "html")
+        msg["From"] = smtp_user
+        msg["To"] = to_email
+        msg["Subject"] = subject
+        msg["Message-ID"] = f"<{uuid.uuid4()}@quickcampaigns.io>"
+        msg["X-Priority"] = "3"
+        msg["X-Entity-Ref-ID"] = f"{uuid.uuid4()}"
+        msg["X-Mailer"] = "QuickCampaignsMailer"
+
+        # Send the email
+        try:
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.set_debuglevel(1)  # Enable verbose output for debugging
+                server.starttls()  # Start TLS encryption
+                server.login(smtp_user, smtp_password)  # Authenticate with the SMTP server
+                server.send_message(msg)  # Send the email
+            print("password reset email sent")
+        except smtplib.SMTPAuthenticationError as e:
+            print(f"SMTP Authentication Error: {e}")
+        except Exception as e:
+            print(f"An error occurred: {e}")
 
         return jsonify({'message': 'A password reset email has been sent to your email address.'}), 200
     except Exception as e:
         current_app.logger.error(f"Failed to send reset email: {e}")
         return jsonify({'message': 'Failed to send reset email.'}), 500
 
-@auth.route('/reset_password/<token>', methods=['POST', 'GET', 'OPTIONS'])
+@auth.route('/reset_password', methods=['POST', 'OPTIONS'])
 @cross_origin(supports_credentials=True)
-def reset_password(token):
+def reset_password():
     if request.method == 'OPTIONS':
         return jsonify({}), 200
 
+    data = request.get_json()
+    token = data.get('token')
+    new_password = data.get('newPassword')
+
+    if not token or not new_password:
+        return jsonify({'message': 'Token and new password are required.'}), 400
+
     try:
         serializer = URLSafeTimedSerializer(current_app.config['SECRET_KEY'])
-        data = serializer.loads(token, salt='password-reset', max_age=3600)  # 1-hour expiration
-        email = data.get('email')
-        new_password = data.get('new_password')
+        token_data = serializer.loads(token, salt='password-reset', max_age=3600)  # 1-hour expiration
+        email = token_data['email']
 
         user = User.query.filter_by(email=email).first()
         if not user:
-            return jsonify({'message': 'Invalid user.'}), 400
+            return jsonify({'message': 'Invalid token or user does not exist.'}), 400
 
-        if user.reset_token_used:
-            return jsonify({'message': 'This password reset link has already been used.'}), 400
-
-        user.password = generate_password_hash(new_password)
-        user.mark_token_as_used()  # Mark the token as used
+        # Update the user's password
+        user.password = generate_password_hash(new_password, method='pbkdf2:sha256')
         db.session.commit()
 
-        # Redirect to the specified URL after successful reset
-        return redirect(REACT_APP_API_URL)  # Redirect to the registration page
+        return jsonify({'message': 'Password reset successfully.'}), 200
     except Exception as e:
         return jsonify({'message': 'The password reset link is invalid or has expired.'}), 400
 
@@ -485,7 +609,7 @@ def verify_email(token):
             return jsonify({'message': 'This email is already verified.'}), 400
 
         # Create the new user
-        hashed_password = generate_password_hash(data['password'])
+        hashed_password = generate_password_hash(data['password'], method='pbkdf2:sha256')
         new_user = User(username=data['username'], email=data['email'], password=hashed_password, is_active=True)
         db.session.add(new_user)
         db.session.commit()
@@ -682,3 +806,45 @@ def facebook_login():
     except Exception as e:
         print(f"Failed to login with Facebook: {e}")
         return jsonify({'message': str(e)}), 401
+
+from flask import redirect, url_for
+
+@auth.route('/update-user', methods=['POST'])
+@cross_origin(supports_credentials=True)
+def update_user():
+    try:
+        data = request.get_json()
+        original_email = data.get('originalEmail')  # Track user's original email
+        updated_email = data.get('updatedEmail')  # Email entered by user in form
+        new_username = data.get('username')
+        new_password = data.get('password')
+
+        if not original_email or not new_username or not new_password:
+            return jsonify({'error': 'Original email, username, and password are required'}), 400
+
+        user = User.query.filter_by(email=original_email).first()
+
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        # Update email only if it's different from the original
+        if user.email != updated_email:
+            user.email = updated_email
+
+        user.username = new_username
+        user.password = generate_password_hash(new_password, method='pbkdf2:sha256')
+
+        db.session.commit()
+
+        login_user(user, remember=True)
+
+        current_app.logger.info(f"User {original_email} updated profile successfully.")
+
+        return jsonify({
+            'message': 'User profile updated successfully.',
+            'redirect_url': f"{REACT_APP_API_URL}"
+        }), 200
+
+    except Exception as e:
+        current_app.logger.error(f"Error updating user profile: {str(e)}")
+        return jsonify({'error': 'An error occurred while updating user profile'}), 500
