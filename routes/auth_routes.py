@@ -814,8 +814,8 @@ from flask import redirect, url_for
 def update_user():
     try:
         data = request.get_json()
-        original_email = data.get('originalEmail')  # Track user's original email
-        updated_email = data.get('updatedEmail')  # Email entered by user in form
+        original_email = data.get('originalEmail')
+        updated_email = data.get('updatedEmail')
         new_username = data.get('username')
         new_password = data.get('password')
 
@@ -827,24 +827,116 @@ def update_user():
         if not user:
             return jsonify({'error': 'User not found'}), 404
 
-        # Update email only if it's different from the original
+        # Generate a verification token
+        serializer = URLSafeTimedSerializer(current_app.config['SECRET_KEY'])
+        hashed_password = generate_password_hash(new_password, method='pbkdf2:sha256')
+
+        token = serializer.dumps(
+            {'original_email': original_email, 'updated_email': updated_email, 
+             'new_username': new_username, 'new_password': hashed_password}, 
+            salt='update-verification'
+        )
+
+        # Generate the verification link
+        verification_link = url_for('auth.verify_update', token=token, _external=True)
+
+        # Email details
+        subject = 'Verify Your Update on QuickCampaigns'
+        to_email = updated_email
+        html_content = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            </head>
+            <body style="font-family: 'Poppins', sans-serif; background-color: #f9f9f9; margin: 0; padding: 0; color: #333;">
+                <div style="max-width: 640px; margin: 20px auto; border: 3px solid #ccc; background-color: #ffffff; padding: 20px; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);">
+                    <div style="max-width: 600px; margin: 0 auto;">
+                        <div style="text-align: center; font-size: 16px; color: #555;">
+                            <p style="margin: 0 0 20px; color: #333;">Hi {new_username},</p>
+                            <p style="margin: 0 0 20px; color: #555;">
+                                You requested to update your profile details on <a href="https://quickcampaigns.io" style="color: #5356FF; text-decoration: none; font-weight: bold;">QuickCampaigns</a>.
+                            </p>
+                            <p style="margin: 30px 0; color: #333;">Click the button below to verify and apply your changes:</p>
+                            <a href="{verification_link}" 
+                            style="display: inline-block; padding: 12px 30px; font-size: 16px; font-weight: 500; color: #FFFFFF; text-decoration: none; border-radius: 8px; background-color: #5356FF;">
+                            Verify Update
+                            </a>
+                            <p style="margin: 20px 0; font-size: 15px; color: #777;">Cheers,<br>The QuickCampaigns Team</p>
+                        </div>
+                        <div style="font-size: 14px; color: #999; text-align: center; margin-top: 20px;">
+                            <p style="margin: 0;">&copy; {datetime.utcnow().year} QuickCampaigns. All rights reserved.</p>
+                        </div>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+
+        # Send the email
+        msg = MIMEText(html_content, "html")
+        msg["From"] = smtp_user
+        msg["To"] = to_email
+        msg["Subject"] = subject
+        msg["Message-ID"] = f"<{uuid.uuid4()}@quickcampaigns.io>"
+        msg["X-Priority"] = "3"
+        msg["X-Entity-Ref-ID"] = f"{uuid.uuid4()}"
+        msg["X-Mailer"] = "QuickCampaignsMailer"
+
+
+        try:
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.set_debuglevel(1)  # Enable verbose output for debugging
+                server.starttls()  # Start TLS encryption
+                server.login(smtp_user, smtp_password)  # Authenticate with the SMTP server
+                server.send_message(msg)  # Send the email
+            print("Update verification email sent")
+        except smtplib.SMTPAuthenticationError as e:
+            print(f"SMTP Authentication Error: {e}")
+            return jsonify({'error': 'Failed to send verification email'}), 500
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return jsonify({'error': 'Failed to send verification email'}), 500
+
+        return jsonify({'message': 'A verification email has been sent. Please check your email to confirm the changes.'}), 200
+
+    except Exception as e:
+        current_app.logger.error(f"Error updating user profile: {str(e)}")
+        return jsonify({'error': 'An error occurred while updating user profile'}), 500
+
+@auth.route('/verify-update/<token>', methods=['GET'])
+@cross_origin(supports_credentials=True)
+def verify_update(token):
+    try:
+        serializer = URLSafeTimedSerializer(current_app.config['SECRET_KEY'])
+        data = serializer.loads(token, salt='update-verification', max_age=3600)  # Token expires in 1 hour
+
+        original_email = data['original_email']
+        updated_email = data['updated_email']
+        new_username = data['new_username']
+        new_password = data['new_password']
+
+        user = User.query.filter_by(email=original_email).first()
+
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        # Apply updates
+        user.username = new_username
+        user.password = new_password  # Already hashed
+
         if user.email != updated_email:
             user.email = updated_email
-
-        user.username = new_username
-        user.password = generate_password_hash(new_password, method='pbkdf2:sha256')
 
         db.session.commit()
 
         login_user(user, remember=True)
 
-        current_app.logger.info(f"User {original_email} updated profile successfully.")
+        print(f"User {user.username} updated successfully and logged in.")
 
-        return jsonify({
-            'message': 'User profile updated successfully.',
-            'redirect_url': f"{REACT_APP_API_URL}"
-        }), 200
+        return redirect(REACT_APP_API_URL)  # Redirect to frontend
 
-    except Exception as e:
-        current_app.logger.error(f"Error updating user profile: {str(e)}")
-        return jsonify({'error': 'An error occurred while updating user profile'}), 500
+    except SignatureExpired:
+        return jsonify({'error': 'The verification link has expired.'}), 400
+    except BadSignature:
+        return jsonify({'error': 'Invalid verification link.'}), 400

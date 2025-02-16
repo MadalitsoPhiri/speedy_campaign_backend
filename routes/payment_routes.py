@@ -177,6 +177,8 @@ def create_checkout_session():
         if plan_type != 'Free Trial':
             session = stripe.checkout.Session.create(
                 payment_method_types=['card'],
+                customer_email=user.email,
+
                 line_items=[{
                     'price': price_id,
                     'quantity': 1,
@@ -196,6 +198,7 @@ def create_checkout_session():
             # Create session with a trial for Free Trial
             session = stripe.checkout.Session.create(
                 payment_method_types=['card'],
+                customer_email=user.email,
                 line_items=[{
                     'price': price_id,
                     'quantity': 1,
@@ -248,6 +251,7 @@ def handle_checkout_session(session):
             # Create a new user account with hashed password
             user = User(email=email, username=name, password=hashed_password, is_active=True)
             user.subscription_plan = plan_type
+            user.has_used_free_trial = True
             db.session.add(user)
             user.stripe_customer_id = session['customer']
             db.session.commit()
@@ -272,6 +276,7 @@ def handle_checkout_session(session):
         else:
             # Normal checkout handling for logged-in users
             user_id = user.id
+            user.has_used_free_trial = True
             user.stripe_customer_id = session['customer']
             ad_account = AdAccount.query.filter_by(user_id=user.id).first()
             ad_accounts = AdAccount.query.filter_by(user_id=user.id).all()
@@ -551,11 +556,13 @@ def subscription_status(ad_account_id):
 @cross_origin(supports_credentials=True)
 @login_required
 def add_ad_account():
+    user = User.query.get(current_user.id)
     try:
 
         # Create a Stripe checkout session
         session = stripe.checkout.Session.create(
             payment_method_types=['card'],
+            customer_email=user.email,
             line_items=[{
                 'price': STRIPE_ENTERPRISE_PLAN_ID,
                 'quantity': 1,
@@ -623,6 +630,7 @@ def renew_subscription_route():
     
     # Debug: Log received data
     current_app.logger.info(f"Received renewal request: {data}")
+    user = User.query.get(current_user.id)
 
     ad_account_id = data.get('ad_account_id')
     plan_type = data.get('plan')
@@ -665,6 +673,7 @@ def renew_subscription_route():
         # Create a new Stripe checkout session
         session = stripe.checkout.Session.create(
             payment_method_types=['card'],
+            customer_email=user.email,
             line_items=[{
                 'price': price_id,
                 'quantity': 1,
@@ -804,8 +813,11 @@ def create_billing_portal_session():
     try:
         # Ensure the user has a Stripe customer ID
         user = User.query.get(current_user.id)
-        if not user or not user.stripe_customer_id:
-            return jsonify({'error': 'User does not have a Stripe customer ID'}), 400
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        if not user.stripe_customer_id:
+            return jsonify({'error': 'no_subscription'}), 400  # Return this for frontend alert
 
         # Create a Stripe Billing Portal session
         session = stripe.billing_portal.Session.create(
