@@ -13,6 +13,7 @@ import requests
 import secrets
 import string
 from werkzeug.security import generate_password_hash
+import uuid
 
 # Initialize the Blueprint for payment routes
 payment = Blueprint('payment', __name__)
@@ -50,112 +51,10 @@ def create_checkout_session():
     current_app.logger.info(f"Plan Type: {plan_type}, Ad Account ID: {ad_account_id}")
 
     ad_account = AdAccount.query.filter_by(id=ad_account_id, user_id=current_user.id).first()
-    ad_accounts = AdAccount.query.filter_by(user_id=user.id).all()
 
     if not ad_account:
         current_app.logger.error(f"Ad account not found or does not belong to the current user. Ad Account ID: {ad_account_id}")
         return jsonify({'error': 'Ad account not found or does not belong to the current user'}), 404
-
-    # Check if the user has any active ad accounts and is upgrading from Professional to Enterprise
-    active_ad_accounts = AdAccount.query.filter_by(user_id=current_user.id, is_subscription_active=True).count()
-
-    if active_ad_accounts > 0 and ad_account.subscription_plan == 'Professional' and plan_type == 'Enterprise':
-        current_app.logger.info(f"User {current_user.id} is upgrading Ad Account {ad_account.id} from Professional to Enterprise plan.")
-
-        # Retrieve the AdAccount's Stripe subscription ID
-        if not ad_account.stripe_subscription_id:
-            current_app.logger.error(f"🚨 Ad Account {ad_account.id} does not have an active Stripe subscription.")
-            return jsonify({'error': 'No active Stripe subscription found'}), 400
-
-        try:
-            # Retrieve the Stripe subscription
-            stripe_subscription = stripe.Subscription.retrieve(ad_account.stripe_subscription_id)
-
-            # Get current subscription item (the plan they are on)
-            current_subscription_item = stripe_subscription["items"]["data"][0].id
-
-            # Update the subscription to use the Enterprise plan
-            stripe.Subscription.modify(
-                ad_account.stripe_subscription_id,
-                items=[{
-                    "id": current_subscription_item,
-                    "price": STRIPE_ENTERPRISE_PLAN_ID,  # Switch to Enterprise plan
-                }],
-                proration_behavior="create_prorations",  # Optional: Prorate the cost
-            )
-
-            # ✅ Update the subscription plan in your database
-            ad_account.subscription_plan = 'Enterprise'
-            user = User.query.get(current_user.id)
-            user.subscription_plan = 'Enterprise'
-            db.session.commit()
-
-            current_app.logger.info(f"✅ Successfully upgraded Ad Account {ad_account.id} to Enterprise plan on Stripe.")
-
-            return jsonify({'message': 'Plan updated to Enterprise and subscription updated on Stripe'}), 200
-
-        except stripe.error.StripeError as e:
-            current_app.logger.error(f"🚨 Stripe API error: {str(e)}")
-            return jsonify({'error': 'Failed to update Stripe subscription. Please try again.'}), 500
-        
-    if user.subscription_plan == 'Enterprise' and plan_type == 'Professional':
-        current_app.logger.info(f"User {user.id} is downgrading from Enterprise to Professional.")
-        user.subscription_plan = 'Professional'
-
-        # Cancel all active subscriptions except the chosen ad account
-        for ad_account in ad_accounts:
-            if ad_account.id != int(chosen_ad_account_id):  # Keep only the chosen one active
-                if ad_account.is_subscription_active and ad_account.stripe_subscription_id:
-                    try:
-                        stripe.Subscription.modify(
-                            ad_account.stripe_subscription_id,
-                            cancel_at_period_end=True  # Subscription stays active until the end of the period
-                        )
-                        current_app.logger.info(f"Canceled subscription for Ad Account {ad_account.id}")
-                    except stripe.error.InvalidRequestError as e:
-                        if "No such subscription" in str(e):
-                            current_app.logger.warning(f"Subscription {ad_account.stripe_subscription_id} not found. Proceeding.")
-                        else:
-                            raise e  # Re-raise unexpected Stripe errors
-                
-                # Reset subscription details for the inactive accounts
-                ad_account.subscription_plan = 'Professional'
-
-
-        # Ensure the chosen ad account remains active and switch its Stripe subscription to Professional
-        chosen_ad_account = AdAccount.query.get(chosen_ad_account_id)
-        if chosen_ad_account:
-            chosen_ad_account.subscription_plan = 'Professional'
-
-            # Fetch the current subscription
-            if chosen_ad_account.stripe_subscription_id:
-                try:
-                    stripe_subscription = stripe.Subscription.retrieve(chosen_ad_account.stripe_subscription_id)
-                    current_subscription_item = stripe_subscription["items"]["data"][0].id
-
-                    # Modify the Stripe subscription to Professional plan
-                    stripe.Subscription.modify(
-                        chosen_ad_account.stripe_subscription_id,
-                        items=[{
-                            "id": current_subscription_item,
-                            "price": STRIPE_PROFESSIONAL_PLAN_ID,  # Switch to Professional pricing
-                        }],
-                        proration_behavior="create_prorations",  # Adjusts billing accordingly
-                    )
-
-                    current_app.logger.info(f"✅ Updated Stripe subscription for Ad Account {chosen_ad_account.id} to Professional.")
-                except stripe.error.StripeError as e:
-                    current_app.logger.error(f"🚨 Error updating Stripe subscription for {chosen_ad_account.id}: {str(e)}")
-                    return jsonify({'error': 'Failed to update Stripe subscription. Please try again.'}), 500
-
-            # Update local DB subscription details
-            chosen_ad_account.subscription_start_date = datetime.utcnow()
-            chosen_ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
-
-        db.session.commit()
-        current_app.logger.info(f"✅ Downgrade complete. User {user.id} now has a Professional plan.")
-
-        return jsonify({'message': 'Downgrade complete. Plan updated to Professional.'}), 200
 
     if plan_type == 'Professional':
         price_id = STRIPE_PROFESSIONAL_PLAN_ID
@@ -233,115 +132,43 @@ def handle_checkout_session(session):
     commit_needed = True  # Flag to control whether to commit changes
 
     if is_anonymous:
-        email = session.get('customer_details', {}).get('email')
-        name = session.get('customer_details', {}).get('name')
+        session_id = session.get('id')
 
-        if not email:
-            current_app.logger.error("No email found for anonymous checkout.")
-            return
+        if not session_id:
+            session_id = str(uuid.uuid4())  # Fallback unique identifier
+            current_app.logger.warning(f"⚠️ No session ID found! Using fallback UUID: {session_id}")
 
-        # Check if the user already exists
-        user = User.query.filter_by(email=email).first()
+        email = f"anon_{session_id}@quickcampaigns.io"
+        name = session.get('customer_details', {}).get('name', "Anonymous User")
 
-        if not user:
-            # Generate a random password
-            random_password = generate_random_password()
-            hashed_password = generate_password_hash(random_password, method='pbkdf2:sha256')
+        # Generate a random password
+        random_password = generate_random_password()
+        hashed_password = generate_password_hash(random_password, method='pbkdf2:sha256')
 
-            # Create a new user account with hashed password
-            user = User(email=email, username=name, password=hashed_password, is_active=True)
-            user.subscription_plan = plan_type
-            user.has_used_free_trial = True
-            db.session.add(user)
-            user.stripe_customer_id = session['customer']
-            db.session.commit()
-            current_app.logger.info(f"Created new user for anonymous checkout with email: {email}")
+        # Create a new user account with hashed password
+        user = User(email=email, username=name, password=hashed_password, is_active=True)
+        user.subscription_plan = plan_type
+        user.has_used_free_trial = True
+        db.session.add(user)
+        user.stripe_customer_id = session['customer']
+        db.session.commit()
+        current_app.logger.info(f"Created new user for anonymous checkout with email: {email}")
 
-            # Create a new ad account for the user
-            ad_account = AdAccount(user_id=user.id, subscription_plan=plan_type, is_subscription_active=True)
-            ad_account.subscription_start_date = datetime.utcnow()
-            ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
-            ad_account.stripe_subscription_id = session['subscription']
-            db.session.add(ad_account)
-            db.session.commit()
-            current_app.logger.info(f"Created new ad account for user {user.id}")
+        # Create a new ad account for the user
+        ad_account = AdAccount(user_id=user.id, subscription_plan=plan_type, is_subscription_active=True)
+        ad_account.subscription_start_date = datetime.utcnow()
+        ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+        ad_account.stripe_subscription_id = session['subscription']
+        db.session.add(ad_account)
+        db.session.commit()
+        current_app.logger.info(f"Created new ad account for user {user.id}")
 
-            if plan_type == 'Free Trial':
-                commit_needed = False  # Skip commit for free trial
-                try:
-                    start_free_trial(user, ad_account, session)
-                except ValueError as e:
-                    current_app.logger.warning(f"Cannot start free trial: {e}")
-
-        else:
-            # Normal checkout handling for logged-in users
-            user_id = user.id
-            user.has_used_free_trial = True
-            user.stripe_customer_id = session['customer']
-            ad_account = AdAccount.query.filter_by(user_id=user.id).first()
-            ad_accounts = AdAccount.query.filter_by(user_id=user.id).all()
-
-            if ad_account.subscription_plan == 'Free Trial' and plan_type in ['Professional', 'Enterprise']:
-                current_app.logger.info(f"Ad Account {ad_account.id} is upgrading from Free Trial to {plan_type}. Cancelling Free Trial subscription in Stripe.")
-
-                if ad_account.stripe_subscription_id:
-                    try:
-                        stripe.Subscription.delete(ad_account.stripe_subscription_id)
-                        current_app.logger.info(f"Successfully canceled Free Trial subscription for Ad Account {ad_account.id} (User {user.id}).")
-                    except stripe.error.InvalidRequestError as e:
-                        if "No such subscription" in str(e):
-                            current_app.logger.warning(f"Free Trial subscription {ad_account.stripe_subscription_id} not found in Stripe. Proceeding.")
-                        else:
-                            raise e  # Re-raise unexpected Stripe errors
-
-
-            if user.subscription_plan == 'Enterprise' and plan_type == 'Professional':
-                current_app.logger.info(f"User {user.id} is downgrading from Enterprise to Professional.")
-                # Delete all ad accounts for downgrade to Professional
-                AdAccount.query.filter_by(user_id=user.id).delete()
-                current_app.logger.info(f"Deleted all ad accounts for user {user.id} as they are downgrading to Professional plan")
-
-                # Create a new ad account for the Professional plan
-                ad_account = AdAccount(user_id=user.id, subscription_plan=plan_type, is_subscription_active=True)
-                ad_account.subscription_start_date = datetime.utcnow()
-                ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
-                ad_account.stripe_subscription_id = session['subscription']
-                db.session.add(ad_account)
-
-                current_app.logger.info(f"Downgrade complete. User {user.id} now has a Professional plan.")
-
-            elif user.subscription_plan == 'Enterprise' and plan_type == 'Enterprise':
-                # Add a new ad account for the existing Enterprise plan
-                ad_account = AdAccount(user_id=user.id, subscription_plan=plan_type, is_subscription_active=True)
-                ad_account.subscription_start_date = datetime.utcnow()
-                ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
-                ad_account.stripe_subscription_id = session['subscription']
-                db.session.add(ad_account)
-                current_app.logger.info(f"Added new ad account for user {user.id} under the Enterprise plan.")
-
-            elif plan_type == 'Free Trial':
-                commit_needed = False  # Skip commit for free trial
-                try:
-                    start_free_trial(user, ad_account, session)
-
-                except ValueError as e:
-                    current_app.logger.warning(f"Cannot start free trial: {e}")
-            else:
-                ad_account.stripe_subscription_id = session['subscription']
-                ad_account.is_subscription_active = True
-                ad_account.subscription_plan = plan_type
-                ad_account.subscription_start_date = datetime.utcnow()
-                ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
-
-            # Update user subscription details only if not Free Trial
-            if commit_needed:
-                user.subscription_plan = plan_type
-                user.is_subscription_active = True
-                user.subscription_start_date = datetime.utcnow()
-                user.subscription_end_date = datetime.utcnow() + timedelta(days=30)
-                db.session.commit()
-
-            current_app.logger.info(f"Subscription plan updated for user {user.id} and ad account {ad_account.id}")
+        if plan_type == 'Free Trial':
+            commit_needed = False  # Skip commit for free trial
+            try:
+                start_free_trial(user, ad_account, session)
+            except ValueError as e:
+                current_app.logger.warning(f"Cannot start free trial: {e}")
 
     else:  
         try:
@@ -375,6 +202,7 @@ def handle_checkout_session(session):
 
         if user and ad_account:
             handle_normal_checkout(user, session, plan_type, ad_account_id)
+            user.has_used_free_trial = True
             pass
 
 def log_user_and_ad_accounts(user):
