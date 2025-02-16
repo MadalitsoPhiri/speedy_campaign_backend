@@ -1,5 +1,5 @@
 from flask import Flask
-# from flask_migrate import Migrate
+from flask_migrate import Migrate
 from dotenv import load_dotenv
 from flask_bcrypt import Bcrypt
 from flask_login import LoginManager
@@ -29,7 +29,7 @@ cors = CORS(app, supports_credentials=True, resources={r"/*": {"origins": REACT_
 
 # Initialize Flask extensions
 db.init_app(app)
-# migrate = Migrate(app, db)
+migrate = Migrate(app, db)
 bcrypt = Bcrypt(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'auth.login'
@@ -50,15 +50,29 @@ app.register_blueprint(targeting, url_prefix='/targeting')
 app.register_blueprint(user_management, url_prefix='/user_management')
 
 
-# Function to check and renew subscriptions
 def check_and_renew_subscriptions():
     with app.app_context():
-        # Get all active ad accounts with active subscriptions
-        active_ad_accounts = AdAccount.query.filter_by(is_subscription_active=True).all()
+        # Get all active users
+        users = User.query.all()
 
-        for account in active_ad_accounts:
-            # Attempt to auto-renew the subscription if the conditions are met
-            account.auto_renew_subscription()
+        for user in users:
+            # Get all active ad accounts for this user
+            active_ad_accounts = AdAccount.query.filter_by(user_id=user.id, is_subscription_active=True).all()
+
+            if not active_ad_accounts:
+                # If no active ad accounts exist, set user subscription to inactive
+                user.is_subscription_active = False
+                db.session.commit()
+                print(f"User {user.id} has no active ad accounts. Setting is_subscription_active=False.")
+            else:
+                # Ensure the user is marked as active if they have active ad accounts
+                user.is_subscription_active = True
+                db.session.commit()
+                print(f"User {user.id} has active ad accounts. Keeping is_subscription_active=True.")
+
+            # Attempt to auto-renew subscriptions for each active ad account
+            for account in active_ad_accounts:
+                account.auto_renew_subscription()
 
 # Function to upgrade free trials to Professional Plan after 5 days
 def upgrade_free_trials():
@@ -84,4 +98,4 @@ def create_tables():
 
 if __name__ == '__main__':
     create_tables()
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)

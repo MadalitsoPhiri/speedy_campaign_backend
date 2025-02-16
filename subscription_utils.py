@@ -1,13 +1,19 @@
 from datetime import datetime, timedelta
 from models import db
 
-def start_free_trial(user):
+def start_free_trial(user, ad_account, session):
     if user.has_used_free_trial:
         raise ValueError("Free Trial has already been used.")
-    
+        
+    ad_account.stripe_subscription_id = session['subscription']
+    ad_account.is_subscription_active = True
+    ad_account.subscription_plan = "Free Trial"
+    ad_account.subscription_start_date = datetime.utcnow()
+    ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=1)
+
     user.subscription_plan = 'Free Trial'
     user.subscription_start_date = datetime.utcnow()
-    user.subscription_end_date = datetime.utcnow() + timedelta(days=5)
+    user.subscription_end_date = datetime.utcnow() + timedelta(days=1)
     user.is_subscription_active = True
     user.has_used_free_trial = True  # Mark that the user has used the free trial
     db.session.commit()

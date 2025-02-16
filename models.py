@@ -16,6 +16,7 @@ class User(UserMixin, db.Model):
     username = db.Column(db.String(150), nullable=False)
     email = db.Column(db.String(255), unique=True, nullable=False)
     password = db.Column(db.String(255), nullable=False)
+    stripe_customer_id = db.Column(db.String(255), unique=True, nullable=True)
     is_active = db.Column(db.Boolean, default=False)  # Set to False by default until email verification
     profile_picture = db.Column(db.String(150))
     ad_accounts = db.relationship('AdAccount', backref='user', lazy=True)
@@ -57,14 +58,6 @@ class User(UserMixin, db.Model):
                 # Upgrade to Professional Plan
                 renew_subscription(self, 'Professional')
                 
-                # Update all associated ad accounts to Professional
-                for account in self.ad_accounts:
-                    account.subscription_plan = 'Professional Plan'
-                    account.subscription_start_date = datetime.utcnow()
-                    account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
-                    account.is_subscription_active = True
-                db.session.commit()
-
 class AdAccount(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
@@ -80,7 +73,7 @@ class AdAccount(db.Model):
     subscription_start_date = db.Column(db.DateTime, nullable=True, default=None)
     subscription_end_date = db.Column(db.DateTime, nullable=True, default=None)
     is_subscription_active = db.Column(db.Boolean, default=False)
-    stripe_subscription_id = db.Column(db.String(255), nullable=True)  # Store Stripe subscription ID
+    stripe_subscription_id = db.Column(db.String(255), unique=True, nullable=True)  # Enforce uniqueness
     name = db.Column(db.String(255), nullable=False)  # Add the name field
     business_manager_id = db.Column(db.String(255), nullable=True)  # Add the BM ID field
 
@@ -99,30 +92,51 @@ class AdAccount(db.Model):
     def auto_renew_subscription(self):
         if self.stripe_subscription_id:
             try:
-                # Check if the subscription exists in Stripe
+                # Retrieve subscription details from Stripe
                 stripe_subscription = stripe.Subscription.retrieve(self.stripe_subscription_id)
+
                 if stripe_subscription['status'] != 'active':
-                    # If the subscription exists but is not active, cancel locally
-                    print(f"Stripe subscription {self.stripe_subscription_id} is not active. Cancelling locally.")
+                    # If the subscription is inactive, cancel it locally
+                    print(f"❌ Stripe subscription {self.stripe_subscription_id} is not active. Cancelling locally.")
                     self.cancel_subscription()
                     return False
-            except stripe.error.InvalidRequestError:
-                # Subscription does not exist in Stripe
-                print(f"Stripe subscription {self.stripe_subscription_id} not found. Cancelling locally.")
-                self.cancel_subscription()
-                return False
 
-        # Proceed with auto-renew if the subscription is valid and the end date has passed
-        if self.is_subscription_active and self.subscription_end_date and self.subscription_end_date < datetime.utcnow():
-            # Extend the subscription for another 30 days
-            self.subscription_start_date = datetime.utcnow()
-            self.subscription_end_date = datetime.utcnow() + timedelta(days=30)
-            self.is_subscription_active = True
-            db.session.commit()
-            return True
-        return False
+                # Extract subscription start and end dates from Stripe (UNIX timestamps)
+                start_timestamp = stripe_subscription.get("current_period_start")
+                end_timestamp = stripe_subscription.get("current_period_end")
+
+                if not start_timestamp or not end_timestamp:
+                    print(f"⚠️ Unable to retrieve start/end dates from Stripe for {self.stripe_subscription_id}")
+                    return False  # Exit if we cannot retrieve dates
+
+                # Convert UNIX timestamps to datetime
+                new_start_date = datetime.utcfromtimestamp(start_timestamp)
+                new_end_date = datetime.utcfromtimestamp(end_timestamp)
+
+                # Update the database with the new dates from Stripe
+                self.subscription_start_date = new_start_date
+                self.subscription_end_date = new_end_date
+                self.is_subscription_active = True  # Ensure status is updated
+                db.session.commit()
+
+                print(f"✅ Subscription {self.stripe_subscription_id} auto-renewed successfully.")
+                return True
+
+            except stripe.error.InvalidRequestError as e:
+                print(f"❌ Stripe subscription {self.stripe_subscription_id} not found: {e}. Cancelling locally.")
+                self.cancel_subscription()
+            except stripe.error.APIConnectionError as e:
+                print(f"🔌 Network error when connecting to Stripe: {e}")
+            except stripe.error.StripeError as e:
+                print(f"⚠️ Stripe API error: {e}")
+            except Exception as e:
+                print(f"❗ Unexpected error in auto-renewal: {e}")
+
+        return False  # Return False if renewal was not possible
 
     def cancel_subscription(self):
+        """Marks the subscription as canceled in the local database"""
+        print(f"🚫 Canceling local subscription for {self.stripe_subscription_id}")
         self.is_subscription_active = False
         self.subscription_plan = None
         self.subscription_start_date = None

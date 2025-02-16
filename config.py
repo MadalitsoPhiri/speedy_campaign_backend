@@ -6,5 +6,5 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = 'Lax'
-    SESSION_COOKIE_SECURE = True  # Set to True in production with HTTPS
+    SESSION_COOKIE_SECURE = False  # Set to True in production with HTTPS
     
