@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import event
 import stripe
 import os
+from sqlalchemy import text
 
 stripe.api_key = os.getenv('STRIPE_API_KEY')
 
@@ -27,6 +28,7 @@ class User(UserMixin, db.Model):
     has_used_free_trial = db.Column(db.Boolean, default=False)  # Track free trial usage
     stripe_subscription_id = db.Column(db.String(255), nullable=True)  # Store Stripe subscription ID
     reset_token_used = db.Column(db.Boolean, default=False)
+    active_ad_account = db.Column(db.Text, nullable=True)
 
     def mark_token_as_used(self):
         self.reset_token_used = True
@@ -57,6 +59,15 @@ class User(UserMixin, db.Model):
             if self.subscription_end_date and datetime.utcnow() >= self.subscription_end_date:
                 # Upgrade to Professional Plan
                 renew_subscription(self, 'Professional')
+    
+    def ensure_stripe_customer(self):
+        """Ensure the user has a Stripe customer ID. If not, create one."""
+        if not self.stripe_customer_id:
+            customer = stripe.Customer.create(email=self.email)
+            self.stripe_customer_id = customer.id
+            db.session.commit()
+        return self.stripe_customer_id
+
                 
 class AdAccount(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -73,6 +84,7 @@ class AdAccount(db.Model):
     subscription_start_date = db.Column(db.DateTime, nullable=True, default=None)
     subscription_end_date = db.Column(db.DateTime, nullable=True, default=None)
     is_subscription_active = db.Column(db.Boolean, default=False)
+    is_active_manual = db.Column(db.Boolean, default=False, nullable=False)
     stripe_subscription_id = db.Column(db.String(255), unique=True, nullable=True)  # Enforce uniqueness
     name = db.Column(db.String(255), nullable=False)  # Add the name field
     business_manager_id = db.Column(db.String(255), nullable=True)  # Add the BM ID field
@@ -138,6 +150,7 @@ class AdAccount(db.Model):
         """Marks the subscription as canceled in the local database"""
         print(f"🚫 Canceling local subscription for {self.stripe_subscription_id}")
         self.is_subscription_active = False
+        self.is_active_manual =False
         self.subscription_plan = None
         self.subscription_start_date = None
         self.subscription_end_date = None
@@ -191,3 +204,36 @@ def check_subscription_status(user):
     if user.subscription_end_date < datetime.utcnow():
         user.is_subscription_active = False
     return user.is_subscription_active
+
+class UsedFreeTrialAdAccounts(db.Model):
+    """Tracks ad accounts that have used a free trial, even after user deletion."""
+    id = db.Column(db.Integer, primary_key=True)
+    ad_account_id = db.Column(db.String(255), unique=True, nullable=False)  # Unique to prevent duplicates
+    has_used_free_trial = db.Column(db.Boolean, default=False)  # Track free trial usage
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)  # Timestamp for when it was added
+
+    @staticmethod
+    def check_free_trial(ad_account_id):
+        """Check if a given ad account ID has actually used a free trial."""
+        account = UsedFreeTrialAdAccounts.query.filter_by(ad_account_id=ad_account_id).first()
+        
+        if account is None:
+            return False  # If account is not found, return False explicitly
+
+        # Explicitly return the boolean value from the database
+        return account.has_used_free_trial
+
+    @staticmethod
+    def record_free_trial_usage(ad_account_id):
+        """Adds or updates an ad account to track free trial usage."""
+        account = UsedFreeTrialAdAccounts.query.filter_by(ad_account_id=ad_account_id).first()
+        
+        if not account:
+            # If account does not exist, create it and immediately set it to True
+            new_entry = UsedFreeTrialAdAccounts(ad_account_id=ad_account_id, has_used_free_trial=False)
+            db.session.add(new_entry)
+            db.session.commit()  # Make sure the insert is saved
+        else:
+            # If the account exists, update the boolean field and commit
+            account.has_used_free_trial = True
+            db.session.commit()  # Make sure this update is persisted properly

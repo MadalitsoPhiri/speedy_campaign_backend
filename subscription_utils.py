@@ -7,6 +7,7 @@ def start_free_trial(user, ad_account, session):
         
     ad_account.stripe_subscription_id = session['subscription']
     ad_account.is_subscription_active = True
+    ad_account.is_active_manual = True
     ad_account.subscription_plan = "Free Trial"
     ad_account.subscription_start_date = datetime.utcnow()
     ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=1)

@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, current_app
 from flask_login import login_required, current_user
 from subscription_utils import start_free_trial
-from models import db, User, AdAccount
+from models import db, User, AdAccount, UsedFreeTrialAdAccounts
 import stripe
 from datetime import datetime, timedelta
 from flask_cors import cross_origin
@@ -47,14 +47,128 @@ def create_checkout_session():
     chosen_ad_account_id = data.get('chosen_ad_account_id')
     user = User.query.get(current_user.id)
 
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    # Ensure user has a Stripe customer ID
+    stripe_customer_id = user.ensure_stripe_customer()
 
     current_app.logger.info(f"Plan Type: {plan_type}, Ad Account ID: {ad_account_id}")
 
     ad_account = AdAccount.query.filter_by(id=ad_account_id, user_id=current_user.id).first()
+    ad_accounts = AdAccount.query.filter_by(user_id=user.id).all()
 
     if not ad_account:
         current_app.logger.error(f"Ad account not found or does not belong to the current user. Ad Account ID: {ad_account_id}")
         return jsonify({'error': 'Ad account not found or does not belong to the current user'}), 404
+
+    # Check if the user has any active ad accounts and is upgrading from Professional to Enterprise
+    active_ad_accounts = AdAccount.query.filter_by(user_id=current_user.id, is_subscription_active=True).count()
+
+    if active_ad_accounts > 0 and ad_account.subscription_plan == 'Professional' and plan_type == 'Enterprise':
+        current_app.logger.info(f"User {current_user.id} is upgrading Ad Account {ad_account.id} from Professional to Enterprise plan.")
+        user.has_used_free_trial = True
+
+        # Retrieve the AdAccount's Stripe subscription ID
+        if not ad_account.stripe_subscription_id:
+            current_app.logger.error(f"🚨 Ad Account {ad_account.id} does not have an active Stripe subscription.")
+            return jsonify({'error': 'No active Stripe subscription found'}), 400
+
+        try:
+            # Retrieve the Stripe subscription
+            stripe_subscription = stripe.Subscription.retrieve(ad_account.stripe_subscription_id)
+
+            # Get current subscription item (the plan they are on)
+            current_subscription_item = stripe_subscription["items"]["data"][0].id
+
+            # Update the subscription to use the Enterprise plan
+            stripe.Subscription.modify(
+                ad_account.stripe_subscription_id,
+                items=[{
+                    "id": current_subscription_item,
+                    "price": STRIPE_ENTERPRISE_PLAN_ID,  # Switch to Enterprise plan
+                }],
+                proration_behavior="create_prorations",  # Optional: Prorate the cost
+            )
+
+            # ✅ Update the subscription plan in your database
+            ad_account.subscription_plan = 'Enterprise'
+            user = User.query.get(current_user.id)
+            user.subscription_plan = 'Enterprise'
+            db.session.commit()
+
+            current_app.logger.info(f"✅ Successfully upgraded Ad Account {ad_account.id} to Enterprise plan on Stripe.")
+
+            return jsonify({
+                'message': 'Plan updated to Enterprise and subscription updated on Stripe',
+                'redirect_to_main': True
+            }), 200
+
+        except stripe.error.StripeError as e:
+            current_app.logger.error(f"🚨 Stripe API error: {str(e)}")
+            return jsonify({'error': 'Failed to update Stripe subscription. Please try again.'}), 500
+        
+    if user.subscription_plan == 'Enterprise' and plan_type == 'Professional':
+        current_app.logger.info(f"User {user.id} is downgrading from Enterprise to Professional.")
+        user.subscription_plan = 'Professional'
+        user.has_used_free_trial = True
+
+        # Cancel all active subscriptions except the chosen ad account
+        for ad_account in ad_accounts:
+            if ad_account.id != int(chosen_ad_account_id):  # Keep only the chosen one active
+                if ad_account.is_subscription_active and ad_account.stripe_subscription_id:
+                    try:
+                        stripe.Subscription.delete(ad_account.stripe_subscription_id)
+                        current_app.logger.info(f"Canceled subscription for Ad Account {ad_account.id}")
+                    except stripe.error.InvalidRequestError as e:
+                        if "No such subscription" in str(e):
+                            current_app.logger.warning(f"Subscription {ad_account.stripe_subscription_id} not found. Proceeding.")
+                        else:
+                            raise e  # Re-raise unexpected Stripe errors
+                
+                # Reset subscription details for the inactive accounts
+                db.session.delete(ad_account)
+
+
+        # Ensure the chosen ad account remains active and switch its Stripe subscription to Professional
+        chosen_ad_account = AdAccount.query.get(chosen_ad_account_id)
+        if chosen_ad_account:
+            chosen_ad_account.subscription_plan = 'Professional'
+            if not chosen_ad_account.is_bound:
+                chosen_ad_account.name = "Ad Account 1"
+
+            # Fetch the current subscription
+            if chosen_ad_account.stripe_subscription_id:
+                try:
+                    stripe_subscription = stripe.Subscription.retrieve(chosen_ad_account.stripe_subscription_id)
+                    current_subscription_item = stripe_subscription["items"]["data"][0].id
+
+                    # Modify the Stripe subscription to Professional plan
+                    stripe.Subscription.modify(
+                        chosen_ad_account.stripe_subscription_id,
+                        items=[{
+                            "id": current_subscription_item,
+                            "price": STRIPE_PROFESSIONAL_PLAN_ID,  # Switch to Professional pricing
+                        }],
+                        proration_behavior="create_prorations",  # Adjusts billing accordingly
+                    )
+
+                    current_app.logger.info(f"✅ Updated Stripe subscription for Ad Account {chosen_ad_account.id} to Professional.")
+                except stripe.error.StripeError as e:
+                    current_app.logger.error(f"🚨 Error updating Stripe subscription for {chosen_ad_account.id}: {str(e)}")
+                    return jsonify({'error': 'Failed to update Stripe subscription. Please try again.'}), 500
+
+            # Update local DB subscription details
+            chosen_ad_account.subscription_start_date = datetime.utcnow()
+            chosen_ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+
+        db.session.commit()
+        current_app.logger.info(f"✅ Downgrade complete. User {user.id} now has a Professional plan.")
+
+        return jsonify({
+                'message': 'Downgrade complete. Plan updated to Professional.',
+                'redirect_to_main': True
+            }), 200
 
     if plan_type == 'Professional':
         price_id = STRIPE_PROFESSIONAL_PLAN_ID
@@ -76,8 +190,7 @@ def create_checkout_session():
         if plan_type != 'Free Trial':
             session = stripe.checkout.Session.create(
                 payment_method_types=['card'],
-                customer_email=user.email,
-
+                customer=stripe_customer_id,
                 line_items=[{
                     'price': price_id,
                     'quantity': 1,
@@ -97,7 +210,7 @@ def create_checkout_session():
             # Create session with a trial for Free Trial
             session = stripe.checkout.Session.create(
                 payment_method_types=['card'],
-                customer_email=user.email,
+                customer=stripe_customer_id,
                 line_items=[{
                     'price': price_id,
                     'quantity': 1,
@@ -159,6 +272,7 @@ def handle_checkout_session(session):
         ad_account.subscription_start_date = datetime.utcnow()
         ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
         ad_account.stripe_subscription_id = session['subscription']
+        ad_account.is_active_manual=True
         db.session.add(ad_account)
         db.session.commit()
         current_app.logger.info(f"Created new ad account for user {user.id}")
@@ -246,6 +360,7 @@ def handle_normal_checkout(user, session, plan_type, ad_account_id):
     else:
         ad_account.stripe_subscription_id = session['subscription']
         ad_account.is_subscription_active = True
+        ad_account.is_active_manual = True
         ad_account.subscription_plan = plan_type
         ad_account.subscription_start_date = datetime.utcnow()
         ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
@@ -309,46 +424,76 @@ def cancel_subscription_route():
         return jsonify({'error': 'Ad account not found or does not belong to the current user'}), 404
 
     try:
-        # Get all active ad accounts for the current user
-        active_ad_accounts = AdAccount.query.filter_by(user_id=current_user.id, is_subscription_active=True).all()
+        # Get all active ad accounts (manual toggle) for the current user
+        active_ad_accounts = AdAccount.query.filter_by(user_id=current_user.id, is_active_manual=True).all()
 
-        # Check if the number of active ad accounts with running plans is less than 3
-        if len(active_ad_accounts) < 3:
-            # Cancel subscriptions for all ad accounts
-            for account in active_ad_accounts:
-                if account.stripe_subscription_id:
-                    try:
-                        stripe.Subscription.modify(
-                            account.stripe_subscription_id,
-                            cancel_at_period_end=True  # Subscription stays active until the end of the period
-                        )
+        current_app.logger.info(f"🔍 Found {len(active_ad_accounts)} manually active ad accounts for User {current_user.id}")
 
-                    except stripe.error.InvalidRequestError as e:
-                        if "No such subscription" in str(e):
-                            current_app.logger.warning(f"Stripe subscription {account.stripe_subscription_id} not found. Proceeding.")
-                        else:
-                            raise e  # Re-raise other Stripe errors
+        # Cancel the requested ad account
+        if ad_account.is_subscription_active and ad_account.stripe_subscription_id:
+            try:
+                stripe.Subscription.modify(
+                    ad_account.stripe_subscription_id,
+                    cancel_at_period_end=True  # Subscription stays active until the end of the period
+                )
+                ad_account.is_active_manual = False
+                current_app.logger.info(f"🚫 Canceled subscription for Ad Account {ad_account.id}")
+            except stripe.error.InvalidRequestError as e:
+                if "No such subscription" in str(e):
+                    current_app.logger.warning(f"⚠️ Stripe subscription {ad_account.stripe_subscription_id} not found. Proceeding.")
+                else:
+                    raise e  # Re-raise other Stripe errors
 
-            return jsonify({'message': 'Subscription canceled for all ad accounts.'}), 200
+        # If there were **exactly 2 active ad accounts**, modify the remaining one
+        if len(active_ad_accounts) == 2:
+            # Find the **remaining** ad account that was **not canceled**
+            remaining_ad_account = next(acc for acc in active_ad_accounts if acc.id != ad_account_id)
+
+            current_app.logger.info(f"🟡 Exactly 2 active ad accounts existed. Switching remaining Ad Account {remaining_ad_account.id} to Professional.")
+
+            try:
+                # Retrieve existing subscription items from Stripe
+                stripe_subscription = stripe.Subscription.retrieve(remaining_ad_account.stripe_subscription_id)
+                subscription_items = stripe_subscription["items"]["data"]
+
+                if not subscription_items:
+                    current_app.logger.error(f"🚨 No subscription items found for Ad Account {remaining_ad_account.id}. Cannot modify plan.")
+                    return jsonify({'error': 'Failed to modify remaining subscription due to missing items.'}), 500
+
+                # Extract the subscription item ID
+                current_subscription_item_id = subscription_items[0].id
+                
+                current_app.logger.info(f"🔄 Modifying Ad Account {remaining_ad_account.id} from {remaining_ad_account.subscription_plan} to Professional.")
+
+                # Modify its Stripe subscription to Professional
+                stripe.Subscription.modify(
+                    remaining_ad_account.stripe_subscription_id,
+                    items=[{
+                        "id": current_subscription_item_id,
+                        "price": STRIPE_PROFESSIONAL_PLAN_ID,
+                    }],
+                    proration_behavior="create_prorations",
+                )
+
+                # ✅ Update database to reflect the downgrade
+                remaining_ad_account.subscription_plan = 'Professional'
+                current_user.subscription_plan = 'Professional'  # Update user plan as well
+                current_app.logger.info(f"✅ Successfully downgraded Ad Account {remaining_ad_account.id} to Professional.")
+
+            except stripe.error.StripeError as e:
+                current_app.logger.error(f"🚨 Stripe error while modifying subscription for Ad Account {remaining_ad_account.id}: {str(e)}")
+                return jsonify({'error': 'Failed to modify remaining subscription. Please try again.'}), 500
         else:
-            # Cancel the subscription for the specific ad account
-            if ad_account.is_subscription_active and ad_account.stripe_subscription_id:
-                try:
-                    stripe.Subscription.modify(
-                            ad_account.stripe_subscription_id,
-                            cancel_at_period_end=True  # Subscription stays active until the end of the period
-                        )
-                except stripe.error.InvalidRequestError as e:
-                    if "No such subscription" in str(e):
-                        current_app.logger.warning(f"Stripe subscription {ad_account.stripe_subscription_id} not found. Proceeding.")
-                    else:
-                        raise e  # Re-raise other Stripe errors
+            current_app.logger.info(f"🟢 More than 2 or less than 2 active ad accounts exist. No modification needed.")
 
-            return jsonify({'message': 'Subscription canceled successfully for the ad account'}), 200
+        db.session.commit()
+
+        return jsonify({'message': 'Subscription canceled successfully. If another ad account was present, it was downgraded to Professional.'}), 200
 
     except Exception as e:
-        current_app.logger.error(f"Error canceling subscription: {str(e)}")
+        current_app.logger.error(f"❌ Unexpected error while canceling subscription: {str(e)}")
         return jsonify({'error': str(e)}), 500
+
 
 @payment.route('/subscription-status/<int:ad_account_id>', methods=['GET'])
 @cross_origin(supports_credentials=True)
@@ -362,6 +507,7 @@ def subscription_status(ad_account_id):
 
     # Check if the ad account has an active subscription
     is_active = ad_account.is_subscription_active
+    is_active_manual = ad_account.is_active_manual
 
     # Set the plan to 'No active plan' if it's None
     plan = ad_account.subscription_plan if ad_account.subscription_plan else 'No active plan'
@@ -370,13 +516,26 @@ def subscription_status(ad_account_id):
     start_date = ad_account.subscription_start_date.strftime('%d/%m/%Y') if ad_account.subscription_start_date else '-- -- --'
     end_date = ad_account.subscription_end_date.strftime('%d/%m/%Y') if ad_account.subscription_end_date else '-- -- --'
 
+    # Fetch next billing date from Stripe if the ad account has a subscription ID
+    next_billing_date = '-- -- --'
+    if ad_account.stripe_subscription_id:
+        try:
+            stripe_subscription = stripe.Subscription.retrieve(ad_account.stripe_subscription_id)
+            if 'current_period_end' in stripe_subscription:
+                next_billing_date = datetime.utcfromtimestamp(stripe_subscription['current_period_end']).strftime('%d/%m/%Y')
+        except stripe.error.StripeError as e:
+            current_app.logger.error(f"🚨 Error fetching next billing date from Stripe: {str(e)}")
+    
     subscription_info = {
         'plan': plan,
         'start_date': start_date,
         'end_date': end_date,
+        'next_billing_date': next_billing_date,  # Send next billing date to frontend
         'is_active': is_active,
-        'has_used_free_trial': current_user.has_used_free_trial  # This is still user-level info
+        'has_used_free_trial': current_user.has_used_free_trial,  # This is still user-level info
+        'is_active_manual': is_active_manual
     }
+    
     return jsonify(subscription_info), 200
 
 
@@ -385,12 +544,18 @@ def subscription_status(ad_account_id):
 @login_required
 def add_ad_account():
     user = User.query.get(current_user.id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    # Ensure user has a Stripe customer ID
+    stripe_customer_id = user.ensure_stripe_customer()
+
     try:
 
         # Create a Stripe checkout session
         session = stripe.checkout.Session.create(
             payment_method_types=['card'],
-            customer_email=user.email,
+            customer=stripe_customer_id,
             line_items=[{
                 'price': STRIPE_ENTERPRISE_PLAN_ID,
                 'quantity': 1,
@@ -444,7 +609,7 @@ def user_subscription_status():
 def active_ad_accounts():
     try:
         # Count the number of active ad accounts for the current user
-        active_ad_accounts_count = AdAccount.query.filter_by(user_id=current_user.id, is_subscription_active=True).count()
+        active_ad_accounts_count = AdAccount.query.filter_by(user_id=current_user.id, is_subscription_active=True, is_active_manual=True).count()
         return jsonify({'count': active_ad_accounts_count}), 200
     except Exception as e:
         current_app.logger.error(f"Error fetching active ad accounts count: {str(e)}")
@@ -459,6 +624,12 @@ def renew_subscription_route():
     # Debug: Log received data
     current_app.logger.info(f"Received renewal request: {data}")
     user = User.query.get(current_user.id)
+
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    # Ensure user has a Stripe customer ID
+    stripe_customer_id = user.ensure_stripe_customer()
 
     ad_account_id = data.get('ad_account_id')
     plan_type = data.get('plan')
@@ -482,17 +653,47 @@ def renew_subscription_route():
     # Debug: Log found ad account
     current_app.logger.info(f"Found ad account: {ad_account.id}, Plan: {ad_account.subscription_plan}")
 
-    # Determine the price ID based on the plan type
-    if plan_type == 'Professional':
-        price_id = STRIPE_PROFESSIONAL_PLAN_ID
-    elif plan_type == 'Enterprise':
+    # Count how many ad accounts the user has
+    user_ad_accounts = AdAccount.query.filter_by(user_id=current_user.id).count()
+
+    # If user has more than one ad account, force plan to Enterprise
+    if user_ad_accounts > 1:
+        plan_type = "Enterprise"
         price_id = STRIPE_ENTERPRISE_PLAN_ID
-    elif plan_type == 'Free Trial':
-        price_id = STRIPE_PROFESSIONAL_PLAN_ID
-        plan_type = "Professional"
+
+        # Fetch all active subscriptions
+        active_subscriptions = AdAccount.query.filter_by(user_id=current_user.id, is_active_manual=True).all()
+
+        for ad_account in active_subscriptions:
+            if ad_account.stripe_subscription_id:
+                try:
+                    # Update Stripe subscription to Enterprise Plan
+                    stripe.Subscription.modify(
+                        ad_account.stripe_subscription_id,
+                        items=[{
+                            "id": stripe.Subscription.retrieve(ad_account.stripe_subscription_id)["items"]["data"][0]["id"],
+                            "price": STRIPE_ENTERPRISE_PLAN_ID,
+                        }]
+                    )
+                    # Update in database
+                    ad_account.subscription_plan = "Enterprise"
+                    db.session.commit()
+                    print(f"✅ Subscription updated to Enterprise for Ad Account {ad_account.id}")
+                except stripe.error.StripeError as e:
+                    print(f"❌ Stripe error updating subscription for {ad_account.id}: {e}")
+
     else:
-        current_app.logger.error(f"Invalid plan type received: {plan_type}")
-        return jsonify({'error': 'Invalid plan type'}), 400
+        # Determine the price ID based on the plan type
+        if plan_type == 'Professional':
+            price_id = STRIPE_PROFESSIONAL_PLAN_ID
+        elif plan_type == 'Enterprise':
+            price_id = STRIPE_ENTERPRISE_PLAN_ID
+        elif plan_type == 'Free Trial':
+            price_id = STRIPE_PROFESSIONAL_PLAN_ID
+            plan_type = "Professional"
+        else:
+            current_app.logger.error(f"Invalid plan type received: {plan_type}")
+            return jsonify({'error': 'Invalid plan type'}), 400
 
     # Debug: Log final plan and price ID
     current_app.logger.info(f"Final Plan Type: {plan_type}, Price ID: {price_id}")
@@ -501,7 +702,7 @@ def renew_subscription_route():
         # Create a new Stripe checkout session
         session = stripe.checkout.Session.create(
             payment_method_types=['card'],
-            customer_email=user.email,
+            customer=stripe_customer_id,
             line_items=[{
                 'price': price_id,
                 'quantity': 1,
@@ -516,6 +717,10 @@ def renew_subscription_route():
                 'is_anonymous': False
             }
         )
+
+        # Update the user's subscription plan in the database
+        user.subscription_plan = plan_type
+        db.session.commit()
 
         # Debug: Log Stripe session creation
         current_app.logger.info(f"Stripe checkout session created successfully. Session ID: {session.id}")
@@ -658,3 +863,18 @@ def create_billing_portal_session():
     except stripe.error.StripeError as e:
         current_app.logger.error(f"Stripe API error: {str(e)}")
         return jsonify({'error': 'Failed to create billing portal session'}), 500
+
+@payment.route('/has-used-free-trial', methods=['POST'])
+@cross_origin(supports_credentials=True)
+@login_required
+def has_ad_account_used_free_trial():
+    """Check if a specific ad account has used a free trial."""
+    data = request.get_json()
+    ad_account_id = data.get("ad_account_id")
+
+    if not ad_account_id:
+        return jsonify({"error": "Missing ad_account_id"}), 400
+
+    has_used = UsedFreeTrialAdAccounts.check_free_trial(ad_account_id)
+    print(has_used)
+    return jsonify({"ad_account_id": ad_account_id, "has_used_free_trial": has_used}), 200

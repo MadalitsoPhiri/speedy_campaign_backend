@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, send_from_directory, current_app, url_for, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from models import User, AdAccount, db
+from models import User, AdAccount, db, UsedFreeTrialAdAccounts
 from flask_login import login_user, current_user, logout_user, login_required
 from flask_cors import cross_origin
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
@@ -16,6 +16,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import uuid
+import json
 
 auth = Blueprint('auth', __name__)
 
@@ -83,6 +84,64 @@ def verify_recaptcha_token(recaptcha_token):
         print(f"Error verifying reCAPTCHA token: {e}")
         return False
 
+def send_verification_email(name, to_email, verification_link):
+    """
+    Helper function to send a verification email.
+    """
+    subject = 'Welcome to QuickCampaigns – Verify Your Email'
+    
+    html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="font-family: 'Poppins', sans-serif; background-color: #f9f9f9; margin: 0; padding: 0; color: #333;">
+            <div style="max-width: 640px; margin: 20px auto; border: 3px solid #ccc; background-color: #ffffff; padding: 20px; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);">
+                <div style="max-width: 600px; margin: 0 auto;">
+                    <div style="text-align: center; font-size: 16px; color: #555;">
+                        <p style="margin: 0 0 20px; color: #333;">Hi {name},</p>
+                        <p style="margin: 0 0 20px; color: #555;">
+                            Your <a href="https://quickcampaigns.io" style="color: #5356FF; text-decoration: none; font-weight: bold;">QuickCampaigns</a> account is live! Start creating lightning-fast Facebook Ads campaigns today.
+                        </p>
+                        <p style="margin: 30px 0; color: #333;">Click the button below to verify your email and get started:</p>
+                        <a href="{verification_link}" 
+                        style="display: inline-block; padding: 12px 30px; font-size: 16px; font-weight: 500; color: #FFFFFF; text-decoration: none; border-radius: 8px; background-color: #5356FF;">
+                        Verify Account
+                        </a>
+                        <p style="margin: 20px 0; font-size: 15px; color: #777;">Cheers,<br>The QuickCampaigns Team</p>
+                    </div>
+                    <div style="font-size: 14px; color: #999; text-align: center; margin-top: 20px;">
+                        <p style="margin: 0;">&copy; {datetime.utcnow().year} QuickCampaigns. All rights reserved.</p>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+    """
+
+    msg = MIMEText(html_content, "html")
+    msg["From"] = smtp_user
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg["Message-ID"] = f"<{uuid.uuid4()}@quickcampaigns.io>"
+    msg["X-Priority"] = "3"
+    msg["X-Entity-Ref-ID"] = f"{uuid.uuid4()}"
+    msg["X-Mailer"] = "QuickCampaignsMailer"
+
+    # Send the email
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.set_debuglevel(1)  # Enable verbose output for debugging
+            server.starttls()  # Start TLS encryption
+            server.login(smtp_user, smtp_password)  # Authenticate with the SMTP server
+            server.send_message(msg)  # Send the email
+        print("Verification email sent")
+    except smtplib.SMTPAuthenticationError as e:
+        print(f"SMTP Authentication Error: {e}")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
 @auth.route('/register', methods=['POST', 'OPTIONS'])
 @cross_origin(supports_credentials=True)
 def register():
@@ -111,63 +170,8 @@ def register():
     # Generate the verification link
     verification_link = url_for('auth.verify_email', token=token, _external=True)
 
-    # Email details
-    subject = 'Welcome to QuickCampaigns – Verify Your Email'
-    to_email = data['email']
-    html_content =f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        </head>
-        <body style="font-family: 'Poppins', sans-serif; background-color: #f9f9f9; margin: 0; padding: 0; color: #333;">
-            <div style="max-width: 640px; margin: 20px auto; border: 3px solid #ccc; background-color: #ffffff; padding: 20px; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);">
-                <div style="max-width: 600px; margin: 0 auto;">
-                    <div style="text-align: center; font-size: 16px; color: #555;">
-                        <p style="margin: 0 0 20px; color: #333;">Hi {data['name']},</p>
-                        <p style="margin: 0 0 20px; color: #555;">
-                            Your <a href="https://quickcampaigns.io" style="color: #5356FF; text-decoration: none; font-weight: bold;">QuickCampaigns</a> account is live! Start creating lightning-fast Facebook Ads campaigns today.
-                        </p>
-                        <p style="margin: 30px 0; color: #333;">Click the button below to verify your email and get started:</p>
-                        <a href="{verification_link}" 
-                        style="display: inline-block; padding: 12px 30px; font-size: 16px; font-weight: 500; color: #FFFFFF; text-decoration: none; border-radius: 8px; background-color: #5356FF;">
-                        Verify Account
-                        </a>
-                        <p style="margin: 20px 0; font-size: 15px; color: #777;">Cheers,<br>The QuickCampaigns Team</p>
-                    </div>
-                    <div style="font-size: 14px; color: #999; text-align: center; margin-top: 20px;">
-                        <p style="margin: 0;">&copy; {datetime.utcnow().year} QuickCampaigns. All rights reserved.</p>
-                    </div>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-
-
-
-    # Create the email message
-    msg = MIMEText(html_content, "html")
-    msg["From"] = smtp_user
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    msg["Message-ID"] = f"<{uuid.uuid4()}@quickcampaigns.io>"
-    msg["X-Priority"] = "3"
-    msg["X-Entity-Ref-ID"] = f"{uuid.uuid4()}"
-    msg["X-Mailer"] = "QuickCampaignsMailer"
-
-    # Send the email
-    try:
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.set_debuglevel(1)  # Enable verbose output for debugging
-            server.starttls()  # Start TLS encryption
-            server.login(smtp_user, smtp_password)  # Authenticate with the SMTP server
-            server.send_message(msg)  # Send the email
-        print("Verification email sent")
-    except smtplib.SMTPAuthenticationError as e:
-        print(f"SMTP Authentication Error: {e}")
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    # ✅ Use the helper function to send the verification email
+    send_verification_email(data['name'], data['email'], verification_link)
 
     return jsonify({'message': 'A verification email has been sent to your email address. Please verify your email to complete registration.'}), 200
 
@@ -333,6 +337,8 @@ def update_ad_account():
         ad_account.app_secret = data['app_secret']
         ad_account.access_token = data['access_token']
         ad_account.business_manager_id = data.get('business_manager_id')
+        UsedFreeTrialAdAccounts.record_free_trial_usage(data['ad_account_id'])
+
         # Fetch ad account name from Facebook
         try:
             fb_response = requests.get(
@@ -656,11 +662,16 @@ def verify_ad_account():
     data = request.get_json()
     ad_account_id = data.get('ad_account_id')
     access_token = data.get('access_token')
-    print(data)
+
+    if not ad_account_id or not access_token:
+        return jsonify({"valid": False, "error": "Ad account ID and access token are required"}), 400
+
+    # Ensure the ad account ID is prefixed with "act_"
+    prefixed_ad_account_id = f"act_{ad_account_id}" if not ad_account_id.startswith("act_") else ad_account_id
 
     try:
         response = requests.get(
-            f'https://graph.facebook.com/v15.0/{ad_account_id}',
+            f'https://graph.facebook.com/v15.0/{prefixed_ad_account_id}',
             params={'access_token': access_token}
         )
         response.raise_for_status()
@@ -807,8 +818,6 @@ def facebook_login():
         print(f"Failed to login with Facebook: {e}")
         return jsonify({'message': str(e)}), 401
 
-from flask import redirect, url_for
-
 @auth.route('/update-user', methods=['POST'])
 @cross_origin(supports_credentials=True)
 def update_user():
@@ -823,7 +832,6 @@ def update_user():
             return jsonify({'error': 'All fields are required'}), 400
 
         existing_user = User.query.filter_by(email=updated_email).first()
-
         if existing_user:
             return jsonify({'error': 'A user with this email already exists'}), 400
 
@@ -831,16 +839,131 @@ def update_user():
         if not user:
             return jsonify({'error': 'User not found'}), 404
 
-        # ✅ Only update if email is not already taken
-        user.email = updated_email
-        user.username = new_username
-        user.password = generate_password_hash(new_password, method='pbkdf2:sha256')
+        # Generate a verification token
+        serializer = URLSafeTimedSerializer(current_app.config['SECRET_KEY'])
+        token = serializer.dumps({
+            'original_email': original_email,
+            'updated_email': updated_email,
+            'new_username': new_username,
+            'new_password': generate_password_hash(new_password, method='pbkdf2:sha256'),
+        }, salt='update-verification')
 
-        db.session.commit()
-        login_user(user, remember=True)
+        # Generate verification link
+        verification_link = url_for('auth.verify_update', token=token, _external=True)
+        print(verification_link)
 
-        return jsonify({'message': 'User profile updated successfully', 'redirect_url': REACT_APP_API_URL}), 200
+        # ✅ Send the verification email using the helper function
+        send_verification_email(new_username, updated_email, verification_link)
+
+        return jsonify({'message': 'A verification email has been sent to your new email address. Please verify to complete the update.'}), 200
 
     except Exception as e:
         current_app.logger.error(f"Error updating user profile: {str(e)}")
         return jsonify({'error': 'An error occurred while updating user profile'}), 500
+    
+@auth.route('/verify-update/<token>', methods=['GET'])
+@cross_origin(supports_credentials=True)
+def verify_update(token):
+    try:
+        serializer = URLSafeTimedSerializer(current_app.config['SECRET_KEY'])
+        data = serializer.loads(token, salt='update-verification', max_age=3600)  # 1-hour expiration
+
+        original_email = data['original_email']
+        updated_email = data['updated_email']
+        new_username = data['new_username']
+        new_password = data['new_password']
+
+        # Find the user with the original email
+        user = User.query.filter_by(email=original_email).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        # Ensure the new email is still available
+        existing_user = User.query.filter_by(email=updated_email).first()
+        if existing_user and existing_user.id != user.id:
+            return jsonify({'error': 'A user with this email already exists'}), 400
+
+        # Apply updates
+        user.email = updated_email
+        user.username = new_username
+        user.password = new_password  # Already hashed in `update_user`
+
+        db.session.commit()
+        login_user(user, remember=True)
+
+        return redirect(REACT_APP_API_URL)  # Redirect to frontend after successful update
+
+    except SignatureExpired:
+        return jsonify({'error': 'The verification link has expired. Please request the update again.'}), 400
+    except BadSignature:
+        return jsonify({'error': 'Invalid verification link.'}), 400
+
+@auth.route('/set_active_ad_account', methods=['POST'])
+@cross_origin(supports_credentials=True)
+@login_required
+def set_active_ad_account():
+    data = request.get_json()
+
+    if not data or 'id' not in data:
+        return jsonify({'error': 'Invalid ad account data'}), 400
+
+    # Store JSON string directly
+    current_user.active_ad_account = json.dumps(data)
+    db.session.commit()
+    
+    return jsonify({'message': 'Active ad account updated successfully'}), 200
+@auth.route('/get_active_ad_account', methods=['GET'])
+@cross_origin(supports_credentials=True)
+@login_required
+def get_active_ad_account():
+    """
+    Fetch the user's active ad account dynamically from the database.
+    """
+    if current_user.active_ad_account:
+        try:
+            # Load the active ad account JSON
+            active_ad_account_data = json.loads(current_user.active_ad_account)
+            active_ad_account_id = active_ad_account_data.get("id")
+
+            if active_ad_account_id:
+                # Query the database to get the latest details of the ad account
+                ad_account = AdAccount.query.get(active_ad_account_id)
+
+                if ad_account:
+                    return jsonify({
+                        "id": ad_account.id,
+                        "ad_account_id": ad_account.ad_account_id,
+                        "pixel_id": ad_account.pixel_id,
+                        "facebook_page_id": ad_account.facebook_page_id,
+                        "app_id": ad_account.app_id,
+                        "app_secret": ad_account.app_secret,
+                        "access_token": ad_account.access_token,
+                        "is_bound": ad_account.is_bound,
+                        "business_manager_id": ad_account.business_manager_id,
+                        "name": ad_account.name,
+                    }), 200
+                else:
+                    return jsonify({"message": "Active ad account not found"}), 404
+
+        except json.JSONDecodeError:
+            return jsonify({"message": "Invalid active ad account format"}), 400
+
+    # If no active ad account is set, assign the first one automatically
+    first_account = AdAccount.query.filter_by(user_id=current_user.id).order_by(AdAccount.id.asc()).first()
+    if first_account:
+        current_user.active_ad_account = json.dumps({"id": first_account.id})
+        db.session.commit()
+        return jsonify({
+            "id": first_account.id,
+            "ad_account_id": first_account.ad_account_id,
+            "pixel_id": first_account.pixel_id,
+            "facebook_page_id": first_account.facebook_page_id,
+            "app_id": first_account.app_id,
+            "app_secret": first_account.app_secret,
+            "access_token": first_account.access_token,
+            "is_bound": first_account.is_bound,
+            "business_manager_id": first_account.business_manager_id,
+            "name": first_account.name,
+        }), 200
+
+    return jsonify({"message": "No ad accounts found"}), 404
