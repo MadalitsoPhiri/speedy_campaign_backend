@@ -1,5 +1,5 @@
 from flask import Flask
-from flask_migrate import Migrate
+# from flask_migrate import Migrate
 from dotenv import load_dotenv
 from flask_bcrypt import Bcrypt
 from flask_login import LoginManager
@@ -29,7 +29,7 @@ cors = CORS(app, supports_credentials=True, resources={r"/*": {"origins": REACT_
 
 # Initialize Flask extensions
 db.init_app(app)
-migrate = Migrate(app, db)
+# migrate = Migrate(app, db)
 bcrypt = Bcrypt(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'auth.login'
@@ -74,23 +74,39 @@ def check_and_renew_subscriptions():
             for account in active_ad_accounts:
                 account.auto_renew_subscription()
 
-# Function to upgrade free trials to Professional Plan after 5 days
+# Function to upgrade free trials to Professional Plan
 def upgrade_free_trials():
     with app.app_context():
-        # Get all users on a free trial
+        print("\n🚀 Running upgrade_free_trials...\n")
         users_on_free_trial = User.query.filter_by(subscription_plan='Free Trial', is_subscription_active=True).all()
-        
         for user in users_on_free_trial:
             user.upgrade_free_trial_to_pro()
+            print(f"🔼 User {user.id} upgraded from Free Trial to Pro.")
+
+# @app.route('/scheduler/jobs', methods=['GET'])
+# def list_scheduled_jobs():
+#     jobs = scheduler.get_jobs()
+#     job_list = [{"id": job.id, "next_run": str(job.next_run_time)} for job in jobs]
+#     return {"jobs": job_list}, 200
+
+@app.route('/scheduler/manual-renew', methods=['GET'])
+def manual_renew():
+    check_and_renew_subscriptions()
+    return {"status": "check_and_renew_subscriptions executed"}, 200
+
+@app.route('/scheduler/manual-upgrade', methods=['GET'])
+def manual_upgrade():
+    upgrade_free_trials()
+    return {"status": "upgrade_free_trials executed"}, 200
 
 # Initialize the APScheduler and schedule the job
-scheduler = BackgroundScheduler()
-scheduler.add_job(func=check_and_renew_subscriptions, trigger="interval", days=1)
-scheduler.add_job(func=upgrade_free_trials, trigger="interval", days=1)
-scheduler.start()
+# scheduler = BackgroundScheduler()
+# scheduler.add_job(func=check_and_renew_subscriptions, trigger="interval", days=1)
+# scheduler.add_job(func=upgrade_free_trials, trigger="interval", days=1)
+# scheduler.start()
 
-# Shut down the scheduler when exiting the app
-atexit.register(lambda: scheduler.shutdown())
+# # Shut down the scheduler when exiting the app
+# atexit.register(lambda: scheduler.shutdown())
 
 def create_tables():
     with app.app_context():

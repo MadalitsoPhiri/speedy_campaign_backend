@@ -10,6 +10,7 @@ import os
 from flask_login import login_user
 import logging
 import requests
+import json
 import secrets
 import string
 from werkzeug.security import generate_password_hash
@@ -262,6 +263,9 @@ def handle_checkout_session(session):
         user = User(email=email, username=name, password=hashed_password, is_active=True)
         user.subscription_plan = plan_type
         user.has_used_free_trial = True
+        user.is_subscription_active = True
+        user.subscription_start_date = datetime.utcnow()
+        user.subscription_end_date = datetime.utcnow() + timedelta(days=1)
         db.session.add(user)
         user.stripe_customer_id = session['customer']
         db.session.commit()
@@ -286,6 +290,8 @@ def handle_checkout_session(session):
 
     else:  
         try:
+            user_id = session['metadata']['user_id']
+            user = User.query.get(user_id)
             metadata = session.get('metadata', {})
             action = metadata.get('action')
             new_ad_account = None  # Initialize to None
@@ -297,6 +303,9 @@ def handle_checkout_session(session):
                 )
                 db.session.add(new_ad_account)
                 db.session.commit()
+
+                user.active_ad_account = json.dumps({"id": new_ad_account.id})
+                db.session.commit()
             else:
                 current_app.logger.info(f"Checkout session completed for action: {action}")
 
@@ -304,14 +313,11 @@ def handle_checkout_session(session):
             current_app.logger.error(f"Error handling checkout session: {str(e)}") 
 
         # Normal checkout handling for logged-in users
-        user_id = session['metadata']['user_id']
         if new_ad_account:
             ad_account_id = new_ad_account.id
-            print(ad_account_id)
         else:
             ad_account_id = session['metadata']['ad_account_id']     
 
-        user = User.query.get(user_id)
         ad_account = AdAccount.query.get(ad_account_id)
 
         if user and ad_account:
@@ -344,6 +350,13 @@ def handle_normal_checkout(user, session, plan_type, ad_account_id):
             try:
                 stripe.Subscription.delete(ad_account.stripe_subscription_id)
                 current_app.logger.info(f"Successfully canceled Free Trial subscription for Ad Account {ad_account.id} (User {user.id}).")
+                ad_account.stripe_subscription_id = session['subscription']
+                ad_account.is_subscription_active = True
+                ad_account.is_active_manual = True
+                ad_account.subscription_plan = plan_type
+                ad_account.subscription_start_date = datetime.utcnow()
+                ad_account.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+
             except stripe.error.InvalidRequestError as e:
                 if "No such subscription" in str(e):
                     current_app.logger.warning(f"Free Trial subscription {ad_account.stripe_subscription_id} not found in Stripe. Proceeding.")
@@ -398,15 +411,89 @@ def stripe_webhook():
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
         handle_checkout_session(session)
+    
+    elif event['type'] == 'invoice.payment_succeeded':
+        invoice = event['data']['object']
+        billing_reason = invoice.get('billing_reason', '')
+        if billing_reason == 'subscription_cycle':
+            subscription_id = invoice.get('subscription')
+            current_app.logger.info(f"Renewal payment succeeded for subscription {subscription_id}")
+            
+            # Look up the AdAccount that has this Stripe subscription ID.
+            ad_account = AdAccount.query.filter_by(stripe_subscription_id=subscription_id).first()
+            if not ad_account:
+                current_app.logger.error(f"No Ad Account found for subscription id {subscription_id}")
+            else:
+                try:
+                    # Retrieve the latest subscription details from Stripe.
+                    stripe_subscription = stripe.Subscription.retrieve(subscription_id)
+                    start_timestamp = stripe_subscription.get("current_period_start")
+                    end_timestamp = stripe_subscription.get("current_period_end")
+                    
+                    if start_timestamp and end_timestamp:
+                        new_start_date = datetime.utcfromtimestamp(start_timestamp)
+                        new_end_date = datetime.utcfromtimestamp(end_timestamp)
+                        
+                        # Update the AdAccount with the new subscription period.
+                        ad_account.subscription_start_date = new_start_date
+                        ad_account.subscription_end_date = new_end_date
+                        ad_account.is_subscription_active = True
+                        
+                        # If the AdAccount is on a Free Trial, upgrade it to Professional
+                        # and update the associated User's subscription details.
+                        if ad_account.subscription_plan == 'Free Trial':
+                            current_app.logger.info(f"Ad Account {ad_account.id} is on Free Trial. Upgrading to Professional.")
+                            ad_account.subscription_plan = 'Professional'
+                            if ad_account.user:
+                                ad_account.user.subscription_plan = 'Professional'
+                                ad_account.user.subscription_start_date = new_start_date
+                                ad_account.user.subscription_end_date = new_end_date
+                                ad_account.user.is_subscription_active = True
+                        
+                        db.session.commit()
+                        
+                        current_app.logger.info(
+                            f"Updated Ad Account {ad_account.id} with subscription period {new_start_date} to {new_end_date}"
+                        )
+                    else:
+                        current_app.logger.warning("Start/end dates not found in Stripe subscription details.")
+                except Exception as e:
+                    current_app.logger.error(f"Error updating subscription for Ad Account {ad_account.id}: {e}")
 
-    # Handle payment failure event
     elif event['type'] == 'invoice.payment_failed':
-        # Log the failure without custom subscription cancellation
-        subscription_id = event['data']['object']['subscription']
+        invoice = event['data']['object']
+        subscription_id = invoice.get('subscription')
         current_app.logger.warning(f"Payment failed for subscription {subscription_id}")
-        # print('failed')
-        # with current_app.test_request_context():
-        #     cancel_subscription_route()
+        
+        # Check if Stripe has scheduled another payment attempt.
+        next_payment_attempt = invoice.get('next_payment_attempt')
+        if next_payment_attempt is not None:
+            next_attempt_time = datetime.utcfromtimestamp(next_payment_attempt)
+            current_app.logger.info(
+                f"Payment failed for subscription {subscription_id}, but next attempt is scheduled at {next_attempt_time}. No DB update yet."
+            )
+            # Optionally, you can return here or simply skip the DB updates.
+            return jsonify({'status': 'retry scheduled'}), 200
+
+        # If there is no next_payment_attempt, this is the final failed attempt.
+        # Look up the AdAccount that has this Stripe subscription ID.
+        ad_account = AdAccount.query.filter_by(stripe_subscription_id=subscription_id).first()
+        if not ad_account:
+            current_app.logger.error(f"No Ad Account found for subscription id {subscription_id}")
+        else:
+            try:
+                # Mark the subscription as inactive and update the manual flag.
+                ad_account.is_subscription_active = False
+                ad_account.is_active_manual = False
+
+                # Also update the associated User's subscription status.
+                if ad_account.user:
+                    ad_account.user.is_subscription_active = False
+
+                db.session.commit()
+                current_app.logger.info(f"Updated Ad Account {ad_account.id} and associated User as inactive due to final failed payment.")
+            except Exception as e:
+                current_app.logger.error(f"Error updating subscription for Ad Account {ad_account.id} on final payment failure: {e}")
 
     return jsonify({'status': 'success'}), 200
 

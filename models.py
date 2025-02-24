@@ -55,7 +55,7 @@ class User(UserMixin, db.Model):
         return user.is_subscription_active
     
     def upgrade_free_trial_to_pro(self):
-        if self.subscription_plan == 'Free Trial' and self.is_subscription_active:
+        if self.subscription_plan == 'Free Trial':
             if self.subscription_end_date and datetime.utcnow() >= self.subscription_end_date:
                 # Upgrade to Professional Plan
                 renew_subscription(self, 'Professional')
@@ -107,7 +107,7 @@ class AdAccount(db.Model):
                 # Retrieve subscription details from Stripe
                 stripe_subscription = stripe.Subscription.retrieve(self.stripe_subscription_id)
 
-                if stripe_subscription['status'] != 'active':
+                if stripe_subscription['status'] not in ["active", "trialing"]:
                     # If the subscription is inactive, cancel it locally
                     print(f"❌ Stripe subscription {self.stripe_subscription_id} is not active. Cancelling locally.")
                     self.cancel_subscription()
