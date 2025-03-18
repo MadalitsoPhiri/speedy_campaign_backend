@@ -13,12 +13,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install sqlite3
 RUN apt-get update && apt-get install -y sqlite3 && apt-get clean
 
-# Make port 8080 available to the world outside this container
+# Make port 5000 available to the world outside this container
 EXPOSE 5000
 
 # Define environment variable for Flask
 ENV FLASK_APP=app.py
 ENV FLASK_ENV=development
 
-# Run the Flask app on port 8080
-CMD ["flask", "run", "--host=0.0.0.0", "--port=5000"]
+# Run the Flask app on port 5000
+CMD ["gunicorn","-b","0.0.0.0:5000","-w","10","app:app"]

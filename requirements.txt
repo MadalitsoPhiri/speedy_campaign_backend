@@ -13,3 +13,4 @@ requests
 stripe
 facebook-business
 psycopg2-binary
+gunicorn
